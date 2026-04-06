@@ -76,6 +76,16 @@ python webui/app.py
 3) 点击“开始下载”即可
 4) 在任务队列中查看进度
 
+## 云端转写路线
+
+当前推荐路线已经调整为“下载 MP3 -> 云端转写 -> 轻量清洗”，不再以本地 `MLX / Whisper` 作为主线。
+
+- 主推转写后端：智谱 `glm-asr`
+- 主推清洗后端：智谱 `glm-4.7-flash` 或 `glm-4.7`
+- 兼容转写后端：OpenRouter `openai/gpt-audio-mini`
+
+完整执行文档见：[doc/cloud-transcription-plan.md](doc/cloud-transcription-plan.md)
+
 ## Docker Hub 镜像
 
 - 仓库地址：`zhangjinhong/ytdlp-webui`
@@ -95,4 +105,3 @@ requirements.txt     Python 依赖
 ## 免责声明
 
 本项目仅供学习与个人使用，请遵守目标网站的服务条款与版权政策。
-
