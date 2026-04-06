@@ -72,15 +72,87 @@ def resolve_audio_path(payload: dict) -> Path:
     raise ValueError("No valid audio path was provided.")
 
 
-def get_model(model_name: str, batch_size: int, quant: str | None) -> LightningWhisperMLX:
+def is_quantization_compat_error(exc: Exception) -> bool:
+    message = str(exc)
+    return "QuantizedLinear" in message and "quantize_module" in message
+
+
+def get_model(
+    model_name: str, batch_size: int, quant: str | None
+) -> tuple[LightningWhisperMLX, str | None, str | None]:
     key = (model_name, batch_size, quant)
     with model_lock:
         model = model_cache.get(key)
         if model is not None:
-            return model
-        model = LightningWhisperMLX(model=model_name, batch_size=batch_size, quant=quant)
+            return model, quant, None
+
+        try:
+            model = LightningWhisperMLX(model=model_name, batch_size=batch_size, quant=quant)
+            model_cache[key] = model
+            return model, quant, None
+        except AttributeError as exc:
+            if not quant or not is_quantization_compat_error(exc):
+                raise
+
+            fallback_key = (model_name, batch_size, None)
+            fallback_model = model_cache.get(fallback_key)
+            if fallback_model is None:
+                fallback_model = LightningWhisperMLX(
+                    model=model_name,
+                    batch_size=batch_size,
+                    quant=None,
+                )
+                model_cache[fallback_key] = fallback_model
+
+            model_cache[key] = fallback_model
+            return (
+                fallback_model,
+                None,
+                f"Requested quant={quant}, fallback to base model because current MLX build "
+                "does not expose QuantizedLinear.quantize_module.",
+            )
+
+
+def remember_model_alias(
+    model_name: str,
+    batch_size: int,
+    requested_quant: str | None,
+    model: LightningWhisperMLX,
+) -> None:
+    key = (model_name, batch_size, requested_quant)
+    with model_lock:
         model_cache[key] = model
-        return model
+
+
+def quant_fallback_note(requested_quant: str | None) -> str | None:
+    if not requested_quant:
+        return None
+    return (
+        f"Requested quant={requested_quant}, fallback to base model because current MLX build "
+        "does not expose QuantizedLinear.quantize_module."
+    )
+
+
+def transcribe_with_fallback(
+    *,
+    model_name: str,
+    batch_size: int,
+    quant: str | None,
+    audio_path: Path,
+    language: str | None,
+) -> tuple[dict, str | None, str | None]:
+    whisper, resolved_quant, compatibility_note = get_model(model_name, batch_size, quant)
+    try:
+        result = whisper.transcribe(audio_path=str(audio_path), language=language)
+        return result, resolved_quant, compatibility_note
+    except AttributeError as exc:
+        if not quant or not is_quantization_compat_error(exc):
+            raise
+
+        fallback_model, _, _ = get_model(model_name, batch_size, None)
+        remember_model_alias(model_name, batch_size, quant, fallback_model)
+        result = fallback_model.transcribe(audio_path=str(audio_path), language=language)
+        return result, None, quant_fallback_note(quant)
 
 
 def convert_segments(raw_segments: list) -> list[dict]:
@@ -131,8 +203,13 @@ def transcribe():
     quant = str(payload.get("quant") or DEFAULT_QUANT or "").strip() or None
 
     start_time = time.time()
-    whisper = get_model(model_name, batch_size, quant)
-    result = whisper.transcribe(audio_path=str(audio_path), language=language)
+    result, resolved_quant, compatibility_note = transcribe_with_fallback(
+        model_name=model_name,
+        batch_size=batch_size,
+        quant=quant,
+        audio_path=audio_path,
+        language=language,
+    )
     text = str(result.get("text") or "").strip()
     segments = convert_segments(result.get("segments") or [])
     if not segments and text:
@@ -147,14 +224,16 @@ def transcribe():
             "segments": segments,
             "source": "remote-mlx",
             "source_detail": (
-                f"lightning-whisper-mlx model={model_name} quant={quant or 'base'} "
+                f"lightning-whisper-mlx model={model_name} quant={resolved_quant or 'base'} "
                 f"batch={batch_size}"
             ),
             "backend": {
                 "service": "lightning-whisper-mlx",
                 "model": model_name,
                 "batch_size": batch_size,
-                "quant": quant,
+                "quant": resolved_quant,
+                "requested_quant": quant,
+                "compatibility_note": compatibility_note,
             },
             "elapsed_seconds": round(time.time() - start_time, 3),
         }
