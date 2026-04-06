@@ -1,4 +1,5 @@
-FROM python:3.11-slim
+FROM python:3.11.11-slim-bookworm
+
 
 ENV PYTHONDONTWRITEBYTECODE=1
 ENV PYTHONUNBUFFERED=1
@@ -18,7 +19,7 @@ RUN set -e; \
     fi; \
     sed -i.bak -E "s#http://deb.debian.org/debian#https://${APT_HOST}/debian#g; s#http://deb.debian.org/debian-security#https://${APT_HOST}/debian-security#g" /etc/apt/sources.list.d/debian.sources; \
     apt-get update; \
-    apt-get install -y --no-install-recommends ffmpeg ca-certificates; \
+    apt-get install -y --no-install-recommends ffmpeg ca-certificates libgomp1; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

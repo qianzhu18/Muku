@@ -41,54 +41,92 @@
       <section class="card">
         <div class="card-header">
           <h2>新建任务</h2>
-          <p>支持 YouTube, Bilibili 等主流平台，支持批量粘贴。</p>
+          <p>支持两种入口：直接下载链接，或选择本地音频文件进入转写队列。默认产出 <code>mp3 + md + txt + srt + raw</code> 逐字稿文件。</p>
         </div>
 
-        <form id="download-form">
-          <div class="field">
-            <label for="url">视频链接 (一行一个)</label>
-            <textarea
-              id="url"
-              name="url"
-              rows="3"
-              placeholder="在此粘贴链接..."
-              required
-            ></textarea>
+        <div class="form-stack">
+          <form id="download-form" class="flow-card">
+            <div class="flow-card-header">
+              <h3>链接下载</h3>
+              <p>输入 YouTube / Bilibili 等链接，下载完成后自动进入逐字稿流程。</p>
+            </div>
+
+            <div class="field">
+              <label for="url">视频链接 (一行一个)</label>
+              <textarea
+                id="url"
+                name="url"
+                rows="3"
+                placeholder="在此粘贴视频链接，一行一个..."
+                required
+              ></textarea>
+            </div>
+
+            <div class="field-grid">
+              <div>
+                <label for="preset">下载格式</label>
+                <select id="preset" name="preset"></select>
+              </div>
+              <div class="checkbox-field">
+                <input type="checkbox" id="use-cookies" />
+                <label for="use-cookies">启用 Cookies (会员/限速)</label>
+              </div>
+            </div>
+
+            <button type="submit" id="start-btn" class="btn-primary">开始下载</button>
+            <p class="field-hint">
+              适合从链接直接落地为知识库逐字稿。
+            </p>
+          </form>
+
+          <div class="flow-divider">
+            <span>或</span>
           </div>
 
-          <div
-            class="field"
-            style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;"
-          >
-            <div>
-              <label for="preset">下载格式</label>
-              <select id="preset" name="preset"></select>
+          <form id="local-audio-form" class="flow-card" enctype="multipart/form-data">
+            <div class="flow-card-header">
+              <h3>本地音频转写</h3>
+              <p>选择已经下载到本机的 MP3 / M4A / WAV，直接进入转写队列。</p>
             </div>
-            <div style="display: flex; align-items: center; padding-top: 24px;">
-              <input type="checkbox" id="use-cookies" style="width: auto; margin-right: 8px;" />
-              <label for="use-cookies" style="margin: 0; cursor: pointer;">
-                启用 Cookies (会员/限速)
-              </label>
-            </div>
-          </div>
 
-          <button type="submit" id="start-btn" class="btn-primary">开始下载</button>
-        </form>
+            <input type="hidden" id="local-audio-preset" name="preset" />
+
+            <div class="field">
+              <label for="local-audio">本地音频文件</label>
+              <input
+                id="local-audio"
+                name="audio_files"
+                type="file"
+                multiple
+              />
+            </div>
+
+            <p class="field-hint" id="local-audio-hint">
+              适合已经落到本地的音频文件。大文件或批量任务仍可使用 CLI。
+            </p>
+            <p class="field-note" id="local-audio-selection">
+              未选择文件
+            </p>
+
+            <button type="submit" id="local-audio-btn" class="btn-secondary">上传并转写</button>
+            <p class="field-hint">
+              CLI 仍可用：
+              <code>python webui/app.py --audio /path/to/file.mp3</code>
+            </p>
+          </form>
+        </div>
       </section>
 
       <section class="card">
-        <div
-          class="card-header"
-          style="display: flex; justify-content: space-between; align-items: center;"
-        >
+        <div class="card-header card-header-inline">
           <h2>任务队列</h2>
-          <span id="queue-count" style="font-size: 0.8rem; color: var(--text-sub);">
-            0 active
+          <span id="queue-count" class="queue-count">
+            空闲
           </span>
         </div>
         <ul id="task-list" class="task-list">
-          <li style="padding: 20px; text-align: center; color: var(--text-light); font-size: 0.9rem;">
-            暂无下载任务，去添加一个吧 🍃
+          <li class="task-empty">
+            暂无任务，去添加一个吧
           </li>
         </ul>
       </section>

@@ -8,3 +8,9 @@ services:
       # - ./cookies.txt:/cookies.txt:ro
     environment:
       # - COOKIES_PATH=/cookies.txt
+      # - TRANSCRIPTION_BACKEND=remote_mlx
+      # - REMOTE_MLX_URL=http://host.docker.internal:9001
+      # - TRANSCRIPTION_FALLBACK_LOCAL=1
+      # - REMOTE_MLX_MODEL=large-v3
+      # - REMOTE_MLX_BATCH_SIZE=12
+      # - REMOTE_MLX_QUANT=4bit
