@@ -179,7 +179,19 @@ OpenRouter 页面没有直接给“每分钟成本”。所以这里的分钟数
    - 输入已有本地音频
    - 直接生成逐字稿 sidecar
 
+4. `artifacts`
+   - 输入音频、Markdown 或 metadata JSON
+   - 反查完整 sidecar 集合
+
 命令行产物和 Web 端保持一致，避免两套输出规范分叉。
+
+继续往 agent-native 方向推进时，优先保留这些特征：
+
+- `--input-file` / `--stdin` 支持批处理
+- `--output json` 和 `--result-file` 支持机器消费
+- `--output paths` 支持 shell pipeline
+- 单次任务允许覆盖语言、模型、提示词文件和是否生成解析稿
+- `artifacts` 默认返回摘要 metadata，避免把完整 API 回包塞进代理上下文
 
 ## 环境变量建议
 

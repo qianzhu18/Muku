@@ -85,6 +85,10 @@ pip install -e .
 # 从 URL 直接生成 MP3 + Markdown 逐字稿
 video-downloade capture "https://www.bilibili.com/video/BVxxxx" --json
 
+# 批量 URL：从文件或 stdin 输入
+video-downloade capture --input-file ./urls.txt --output paths
+cat ./urls.txt | video-downloade capture --stdin --json
+
 # 仅下载，不生成逐字稿
 video-downloade download "https://www.bilibili.com/video/BVxxxx" \
   --preset "Best Audio (MP3)" \
@@ -92,6 +96,10 @@ video-downloade download "https://www.bilibili.com/video/BVxxxx" \
 
 # 处理本地音频
 video-downloade audio "/path/to/file.mp3" --source-url "https://example.com" --json
+
+# 反查某个音频或 sidecar 对应的整组产物
+video-downloade artifacts "/path/to/file.mp3" --json
+video-downloade artifacts "/path/to/file.mp3" --full-metadata --json
 
 # 检查环境与配置
 video-downloade doctor --json
@@ -105,6 +113,17 @@ video-downloade serve --port 8080
 ```bash
 python -m webui.cli --help
 ```
+
+几个高频 CLI 选项：
+
+- `--input-file` / `--stdin`：批量输入 URL 或音频路径
+- `--output text|json|paths`：切换输出格式，方便人类或 AI 消费
+- `--result-file`：把结果 JSON 落盘，便于后续自动化
+- `--language`：覆盖本次转写语言提示
+- `--transcription-model` / `--cleanup-model` / `--article-model`：单次任务覆盖模型
+- `--cleanup/--no-cleanup`、`--article/--no-article`：控制成本和处理深度
+- `artifacts`：从任意一个产物路径反查整组 sidecar
+- `artifacts` 默认只返回 metadata 摘要；加 `--full-metadata` 才返回完整 `转写信息.json`
 
 ## 使用说明
 
