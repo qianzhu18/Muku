@@ -41,7 +41,7 @@
       <section class="card">
         <div class="card-header">
           <h2>新建任务</h2>
-          <p>支持 YouTube、Bilibili 等主流平台。选择 `Best Audio (MP3)` 后会自动调用 OpenRouter 转写，并按配置使用 GLM 清洗逐字稿。</p>
+          <p>支持 YouTube、Bilibili 等主流平台。你可以单独下载 MP3，也可以在 MP3 模式下勾选“下载后提取 MD 逐字稿”。</p>
         </div>
 
         <form id="download-form">
@@ -64,13 +64,25 @@
               <label for="preset">下载格式</label>
               <select id="preset" name="preset"></select>
             </div>
-            <div style="display: flex; align-items: center; padding-top: 24px;">
-              <input type="checkbox" id="use-cookies" style="width: auto; margin-right: 8px;" />
-              <label for="use-cookies" style="margin: 0; cursor: pointer;">
-                启用 Cookies (会员/限速)
-              </label>
+            <div style="display: flex; flex-direction: column; gap: 10px; padding-top: 24px;">
+              <div style="display: flex; align-items: center;">
+                <input type="checkbox" id="generate-transcript" style="width: auto; margin-right: 8px;" />
+                <label for="generate-transcript" style="margin: 0; cursor: pointer;">
+                  下载后提取 MD 逐字稿
+                </label>
+              </div>
+              <div style="display: flex; align-items: center;">
+                <input type="checkbox" id="use-cookies" style="width: auto; margin-right: 8px;" />
+                <label for="use-cookies" style="margin: 0; cursor: pointer;">
+                  启用 Cookies (会员/限速)
+                </label>
+              </div>
             </div>
           </div>
+
+          <p id="transcript-hint" style="margin: -6px 0 16px; font-size: 0.84rem; color: var(--text-sub);">
+            如需生成逐字稿，请选择 `Best Audio (MP3)`，再勾选“下载后提取 MD 逐字稿”。
+          </p>
 
           <button type="submit" id="start-btn" class="btn-primary">开始下载</button>
         </form>

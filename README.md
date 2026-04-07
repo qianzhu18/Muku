@@ -106,7 +106,7 @@ python webui/app.py
 -e TRANSCRIPTION_LANGUAGE=auto
 ```
 
-`Best Audio (MP3)` 预设下载完成后会自动产出：
+勾选“下载后提取 MD 逐字稿”后，`Best Audio (MP3)` 任务会额外产出：
 
 - `xxx.raw.txt`
 - `xxx.clean.txt`

@@ -42,7 +42,7 @@ def env_bool(name: str, default: bool) -> bool:
 
 
 APP_TITLE = "Downloader by Qianzhu"
-DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", "/downloads")
+DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", str(Path.home() / "Downloads"))
 COOKIES_PATH = os.environ.get("COOKIES_PATH", "")
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "2"))
 HOST = os.environ.get("HOST", "0.0.0.0")
@@ -77,6 +77,7 @@ class Job:
     url: str
     preset: str
     use_cookies: bool
+    generate_transcript: bool
     created_at: float = field(default_factory=time.time)
     title: str = "Fetching info..."
     status: str = "Queued"
@@ -87,6 +88,7 @@ class Job:
     download_path: str | None = None
     transcript_path: str | None = None
     provider: str | None = None
+    backend_error: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
@@ -94,6 +96,30 @@ app = Flask(__name__)
 jobs: dict[str, Job] = {}
 jobs_lock = threading.Lock()
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+
+
+class YtdlpLogger:
+    def __init__(self, job: Job):
+        self.job = job
+
+    def debug(self, msg: str) -> None:
+        return
+
+    def info(self, msg: str) -> None:
+        return
+
+    def warning(self, msg: str) -> None:
+        self._remember(msg)
+
+    def error(self, msg: str) -> None:
+        self._remember(msg)
+
+    def _remember(self, msg: str) -> None:
+        message = msg.strip()
+        if not message:
+            return
+        with self.job.lock:
+            self.job.backend_error = message
 
 
 def set_job_state(job: Job, *, status: str | None = None, progress: float | None = None) -> None:
@@ -135,9 +161,14 @@ def build_ydl_options(job: Job) -> dict:
         "format": preset_conf["format"],
         "outtmpl": output_template(),
         "progress_hooks": [progress_hook(job)],
+        "logger": YtdlpLogger(job),
         "quiet": True,
         "no_warnings": True,
-        "ignoreerrors": True,
+        "ignoreerrors": False,
+        "noplaylist": True,
+        "socket_timeout": 30,
+        "retries": 3,
+        "fragment_retries": 3,
     }
 
     if "merge_output_format" in preset_conf:
@@ -171,6 +202,28 @@ def resolve_media_path(expected_path: Path, preset: str) -> Path:
     if matches:
         return matches[0]
     raise RuntimeError("Downloaded media file was not found.")
+
+
+def find_recent_media_path(created_at: float, preset: str) -> Path:
+    exts = {".mp3"} if preset == "Best Audio (MP3)" else {".mp4", ".mkv", ".webm", ".mov", ".m4a"}
+    root = Path(DOWNLOAD_DIR)
+    candidates: list[Path] = []
+    for path in root.rglob("*"):
+        if not path.is_file():
+            continue
+        if path.suffix.lower() not in exts:
+            continue
+        try:
+            if path.stat().st_mtime + 5 < created_at:
+                continue
+        except FileNotFoundError:
+            continue
+        candidates.append(path)
+
+    if not candidates:
+        raise RuntimeError("Downloaded media file was not found.")
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    return candidates[0]
 
 
 def prepare_audio_for_transcription(audio_path: Path) -> Path:
@@ -323,12 +376,12 @@ def worker(job_id: str) -> None:
     if not job:
         return
 
-    set_job_state(job, status="Starting...")
-    Path(DOWNLOAD_DIR).mkdir(parents=True, exist_ok=True)
-    options = build_ydl_options(job)
-    preset_conf = FORMAT_PRESETS[job.preset]
-
     try:
+        set_job_state(job, status="Starting...")
+        Path(DOWNLOAD_DIR).mkdir(parents=True, exist_ok=True)
+        options = build_ydl_options(job)
+        preset_conf = FORMAT_PRESETS[job.preset]
+
         expected_path: Path | None = None
         with yt_dlp.YoutubeDL(options) as ydl:
             preview_info = None
@@ -341,27 +394,23 @@ def worker(job_id: str) -> None:
             except Exception:
                 pass
 
-            download_info = ydl.extract_info(job.url, download=True)
-            if expected_path is None and isinstance(download_info, dict):
-                expected_path = Path(ydl.prepare_filename(download_info))
-                with job.lock:
-                    job.title = download_info.get("title", job.title)
+            ydl.download([job.url])
 
-        if expected_path is None:
-            raise RuntimeError("Unable to resolve download output path.")
-
-        media_path = resolve_media_path(expected_path, job.preset)
+        if expected_path is not None:
+            media_path = resolve_media_path(expected_path, job.preset)
+        else:
+            media_path = find_recent_media_path(job.created_at, job.preset)
         job.download_path = str(media_path)
         job.artifact_dir = str(media_path.parent)
 
-        if preset_conf.get("transcribe") and ENABLE_TRANSCRIPTION:
+        if job.generate_transcript and ENABLE_TRANSCRIPTION:
             run_transcription_pipeline(job, media_path)
 
         with job.lock:
             job.done = True
             job.status = (
                 "Done · transcript ready"
-                if preset_conf.get("transcribe") and ENABLE_TRANSCRIPTION
+                if job.generate_transcript and ENABLE_TRANSCRIPTION
                 else "Done"
             )
             job.progress = 100
@@ -369,7 +418,7 @@ def worker(job_id: str) -> None:
         with job.lock:
             job.done = True
             job.status = "Failed"
-            job.error = str(exc)
+            job.error = job.backend_error or str(exc)
 
 
 @app.route("/")
@@ -377,6 +426,7 @@ def index():
     config = {
         "presets": list(FORMAT_PRESETS.keys()),
         "defaultPreset": "Best Video (MP4)",
+        "audioPreset": "Best Audio (MP3)",
         "transcriptionEnabled": ENABLE_TRANSCRIPTION,
         "transcriptionProvider": "openrouter",
         "transcriptionModel": OPENROUTER_TRANSCRIPTION_MODEL,
@@ -396,12 +446,18 @@ def start():
 
     preset = data.get("preset")
     use_cookies = bool(data.get("use_cookies"))
+    generate_transcript = bool(data.get("generate_transcript"))
+
+    if preset not in FORMAT_PRESETS:
+        return jsonify({"error": "Invalid preset"}), 400
+    if generate_transcript and preset != "Best Audio (MP3)":
+        return jsonify({"error": "提取 Markdown 逐字稿前，请先选择 Best Audio (MP3)。"}), 400
 
     added = 0
     with jobs_lock:
         for url in urls:
             job_id = uuid.uuid4().hex
-            job = Job(job_id, url, preset, use_cookies)
+            job = Job(job_id, url, preset, use_cookies, generate_transcript)
             jobs[job_id] = job
             executor.submit(worker, job_id)
             added += 1
@@ -425,6 +481,7 @@ def tasks():
                     "download_path": job.download_path,
                     "transcript_path": job.transcript_path,
                     "provider": job.provider,
+                    "generate_transcript": job.generate_transcript,
                 }
             )
     return jsonify({"tasks": tasks_list})

@@ -4,6 +4,8 @@ const taskList = document.getElementById("task-list");
 const form = document.getElementById("download-form");
 const startBtn = document.getElementById("start-btn");
 const queueCount = document.getElementById("queue-count");
+const transcriptCheckbox = document.getElementById("generate-transcript");
+const transcriptHint = document.getElementById("transcript-hint");
 
 (function init() {
   config.presets.forEach((preset) => {
@@ -13,7 +15,12 @@ const queueCount = document.getElementById("queue-count");
   });
   presetSelect.value = config.defaultPreset;
   updateSubmitLabel();
-  presetSelect.addEventListener("change", updateSubmitLabel);
+  updateTranscriptToggle();
+  presetSelect.addEventListener("change", () => {
+    updateTranscriptToggle();
+    updateSubmitLabel();
+  });
+  transcriptCheckbox.addEventListener("change", updateSubmitLabel);
   setInterval(poll, 1500);
   poll();
 })();
@@ -23,16 +30,26 @@ form.addEventListener("submit", async (event) => {
   const url = document.getElementById("url").value;
   const preset = presetSelect.value;
   const cookies = document.getElementById("use-cookies").checked;
+  const generateTranscript = transcriptCheckbox.checked;
 
   startBtn.disabled = true;
   startBtn.textContent = "提交中...";
 
   try {
-    await fetch("/api/start", {
+    const res = await fetch("/api/start", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url, preset, use_cookies: cookies }),
+      body: JSON.stringify({
+        url,
+        preset,
+        use_cookies: cookies,
+        generate_transcript: generateTranscript,
+      }),
     });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || `HTTP ${res.status}`);
+    }
     document.getElementById("url").value = "";
     poll();
   } catch (err) {
@@ -74,6 +91,9 @@ function render(tasks) {
         : task.download_path
           ? `<div class="task-path">文件: ${escapeHtml(task.download_path)}</div>`
           : "";
+      const modeHint = task.generate_transcript
+        ? '<div class="task-path">模式: MP3 + Markdown 逐字稿</div>'
+        : '<div class="task-path">模式: 仅下载文件</div>';
 
       return `
         <li class="task-item">
@@ -82,6 +102,7 @@ function render(tasks) {
                 <div class="task-status" style="color: ${color}">
                     ${escapeHtml(task.error ? task.error : task.status)}
                 </div>
+                ${modeHint}
                 ${outputHint}
             </div>
             ${
@@ -99,12 +120,23 @@ function render(tasks) {
 
 function updateSubmitLabel() {
   const preset = presetSelect.value;
-  const isAudioPreset = preset === "Best Audio (MP3)";
-  if (isAudioPreset && config.transcriptionEnabled) {
+  const isAudioPreset = preset === config.audioPreset;
+  if (isAudioPreset && config.transcriptionEnabled && transcriptCheckbox.checked) {
     startBtn.textContent = "开始下载并转写";
     return;
   }
   startBtn.textContent = "开始下载";
+}
+
+function updateTranscriptToggle() {
+  const isAudioPreset = presetSelect.value === config.audioPreset;
+  transcriptCheckbox.disabled = !isAudioPreset;
+  if (!isAudioPreset) {
+    transcriptCheckbox.checked = false;
+  }
+  transcriptHint.textContent = isAudioPreset
+    ? "当前是 MP3 下载模式。勾选后会在下载完成后自动生成 Markdown 逐字稿。"
+    : "逐字稿提取仅在 Best Audio (MP3) 模式下可用。";
 }
 
 function escapeHtml(value) {
