@@ -11,6 +11,39 @@ class SubtitleParsingTests(unittest.TestCase):
         parsed = web_app.parse_cookies_from_browser_spec("chrome:Profile 1")
         self.assertEqual(parsed, ("chrome", "Profile 1", None, None))
 
+    def test_collect_url_inputs_accepts_bilibili_share_text(self) -> None:
+        share_text = (
+            "【SpaceX冲击史上最大IPO，马斯克想要的真的只是一家“公司”吗？】 "
+            "https://www.bilibili.com/video/BV14PXKBbEhy/?share_source=copy_web&vd_source=test"
+        )
+
+        urls = web_app.collect_url_inputs(share_text)
+
+        self.assertEqual(
+            urls,
+            ["https://www.bilibili.com/video/BV14PXKBbEhy/?share_source=copy_web&vd_source=test"],
+        )
+
+    def test_collect_url_inputs_extracts_multiple_urls_from_share_blocks(self) -> None:
+        shared_text = """
+        【视频一】
+        https://www.bilibili.com/video/BV1111111111/?share_source=copy_web
+        打开看看
+
+        Watch this:
+        https://www.youtube.com/watch?v=abcdefghijk
+        """.strip()
+
+        urls = web_app.collect_url_inputs(shared_text)
+
+        self.assertEqual(
+            urls,
+            [
+                "https://www.bilibili.com/video/BV1111111111/?share_source=copy_web",
+                "https://www.youtube.com/watch?v=abcdefghijk",
+            ],
+        )
+
     def test_load_subtitle_text_parses_youtube_json3_and_dedupes_lines(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             subtitle_path = Path(temp_dir) / "captions.json3"
@@ -56,6 +89,36 @@ class SubtitleParsingTests(unittest.TestCase):
 
 
 class TranscriptRoutingTests(unittest.TestCase):
+    def test_start_accepts_share_text_payload(self) -> None:
+        share_text = (
+            "【SpaceX冲击史上最大IPO，马斯克想要的真的只是一家“公司”吗？】 "
+            "https://www.bilibili.com/video/BV14PXKBbEhy/?share_source=copy_web&vd_source=test"
+        )
+
+        with web_app.jobs_lock:
+            web_app.jobs.clear()
+
+        with web_app.app.test_client() as client, mock.patch.object(web_app.executor, "submit", return_value=None):
+            response = client.post(
+                "/api/start",
+                json={
+                    "url": share_text,
+                    "preset": web_app.TRANSCRIPT_PRESET_NAME,
+                    "use_cookies": True,
+                    "generate_transcript": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        with web_app.jobs_lock:
+            created_jobs = list(web_app.jobs.values())
+            self.assertEqual(len(created_jobs), 1)
+            self.assertEqual(
+                created_jobs[0].url,
+                "https://www.bilibili.com/video/BV14PXKBbEhy/?share_source=copy_web&vd_source=test",
+            )
+            web_app.jobs.clear()
+
     def test_download_media_uses_download_info_when_preview_fails(self) -> None:
         job = web_app.Job(
             job_id="job-download",

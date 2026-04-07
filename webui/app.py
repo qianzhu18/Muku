@@ -121,6 +121,7 @@ TIMECODE_LINE_RE = re.compile(
 )
 NUMERIC_CUE_RE = re.compile(r"^\d+$")
 XML_TAG_RE = re.compile(r"<[^>]+>")
+URL_CANDIDATE_RE = re.compile(r"https?://[^\s<>'\"“”‘’]+", re.IGNORECASE)
 COOKIES_FROM_BROWSER_RE = re.compile(
     r"""(?x)
     (?P<name>[^+:]+)
@@ -352,6 +353,34 @@ def prepare_audio_for_transcription(audio_path: Path) -> Path:
 def sanitize_output_component(value: str) -> str:
     sanitized = re.sub(r'[<>:"/\\\\|?*\x00-\x1f]', "_", value).strip().rstrip(".")
     return sanitized or "untitled"
+
+
+def normalize_shared_url(candidate: str) -> str:
+    trailing_chars = ".,!?;:)]}>\"'。 ，！？；：、）】」』》".replace(" ", "")
+    return candidate.strip().rstrip(trailing_chars)
+
+
+def extract_urls_from_text(text: str) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    for match in URL_CANDIDATE_RE.finditer(text):
+        normalized = normalize_shared_url(match.group(0))
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        urls.append(normalized)
+
+    return urls
+
+
+def collect_url_inputs(text: str) -> list[str]:
+    urls = extract_urls_from_text(text)
+    if urls:
+        return urls
+
+    stripped = text.strip()
+    return [stripped] if stripped else []
 
 
 def build_artifact_base_path(info: dict) -> Path:
@@ -861,9 +890,9 @@ def index():
 @app.route("/api/start", methods=["POST"])
 def start():
     data = request.json or {}
-    urls = [u.strip() for u in data.get("url", "").splitlines() if u.strip()]
+    urls = collect_url_inputs(str(data.get("url", "")))
     if not urls:
-        return jsonify({"error": "No URL"}), 400
+        return jsonify({"error": "没有识别到可用链接。支持直接粘贴 URL，或粘贴 Bilibili / YouTube 分享文案。"}), 400
 
     preset = data.get("preset")
     use_cookies = bool(data.get("use_cookies"))

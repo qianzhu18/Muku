@@ -102,7 +102,7 @@ python webui/app.py
 
 ## Web 使用方式
 
-1. 在输入框粘贴一个或多个链接。
+1. 在输入框粘贴一个或多个链接，或直接粘贴 Bilibili / YouTube 分享文案。
 2. 选择下载预设：`Highest Video (MP4)`、`Best Audio (MP3)` 或 `Markdown 逐字稿（字幕优先）`。
 3. 点击开始任务。
 4. 在任务列表中查看状态、输出路径和逐字稿产物。
@@ -111,6 +111,12 @@ python webui/app.py
 
 - `POST /api/start`：提交任务
 - `GET /api/tasks`：查询最近任务
+
+输入层会自动从分享文案中提取 URL，例如：
+
+```text
+【SpaceX冲击史上最大IPO，马斯克想要的真的只是一家“公司”吗？】 https://www.bilibili.com/video/BV14PXKBbEhy/?share_source=copy_web&vd_source=...
+```
 
 这也为后续安卓端和分享入口复用同一套后端打下了基础。
 

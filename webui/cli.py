@@ -62,6 +62,37 @@ def _collect_line_inputs(
     return tuple(deduped)
 
 
+def _collect_url_inputs(
+    *,
+    values: tuple[str, ...],
+    input_file: Path | None,
+    stdin_enabled: bool,
+) -> tuple[str, ...]:
+    raw_blocks = [value for value in values if value.strip()]
+
+    if input_file is not None:
+        raw_blocks.append(input_file.expanduser().read_text(encoding="utf-8"))
+
+    if stdin_enabled:
+        raw_blocks.append(click.get_text_stream("stdin").read())
+
+    merged_text = "\n".join(block for block in raw_blocks if block.strip())
+    normalized = web_app.collect_url_inputs(merged_text)
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for item in normalized:
+        if item in seen:
+            continue
+        deduped.append(item)
+        seen.add(item)
+
+    if not deduped:
+        raise click.ClickException("没有识别到可用链接。支持直接粘贴 URL，或粘贴 Bilibili / YouTube 分享文案。")
+
+    return tuple(deduped)
+
+
 def _write_result_file(results: list[dict], result_file: Path | None) -> None:
     if result_file is None:
         return
@@ -449,11 +480,10 @@ def capture_command(
     keep_transcription_input: bool | None,
 ) -> None:
     """从 URL 直接生成 Markdown 逐字稿，优先提取字幕，失败回退到 MP3 转写。"""
-    resolved_urls = _collect_line_inputs(
+    resolved_urls = _collect_url_inputs(
         values=urls,
         input_file=input_file,
         stdin_enabled=stdin_enabled,
-        label="URL",
     )
     final_output_mode = _normalize_output_mode(output_mode, as_json)
     with _runtime_overrides(
@@ -587,11 +617,10 @@ def download_command(
     if transcript and preset != DEFAULT_AUDIO_PRESET:
         raise click.ClickException("开启逐字稿时，请将 --preset 设为 Best Audio (MP3)。")
 
-    resolved_urls = _collect_line_inputs(
+    resolved_urls = _collect_url_inputs(
         values=urls,
         input_file=input_file,
         stdin_enabled=stdin_enabled,
-        label="URL",
     )
     final_output_mode = _normalize_output_mode(output_mode, as_json)
     with _runtime_overrides(
