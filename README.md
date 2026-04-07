@@ -53,6 +53,8 @@ ${HOME}/Downloads:/downloads
 
 ```bash
 DOCKER_COOKIES_PATH=/cookies.txt
+DOCKER_YOUTUBE_COOKIES_PATH=/youtube.cookies.txt
+DOCKER_BILIBILI_COOKIES_PATH=/bilibili.cookies.txt
 ```
 
 然后再把你的 Cookies 文件挂进容器，例如：
@@ -60,7 +62,8 @@ DOCKER_COOKIES_PATH=/cookies.txt
 ```yaml
 volumes:
   - ${HOME}/Downloads:/downloads
-  - ./cookies.txt:/cookies.txt:ro
+  - ./youtube.cookies.txt:/youtube.cookies.txt:ro
+  - ./bilibili.cookies.txt:/bilibili.cookies.txt:ro
 ```
 
 ### Docker Run
