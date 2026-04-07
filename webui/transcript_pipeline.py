@@ -70,13 +70,13 @@ def detect_platform(url: str) -> str:
     return "Unknown"
 
 
-def build_artifact_paths(audio_path: Path) -> dict[str, Path]:
-    stem = audio_path.stem
+def build_artifact_paths(base_path: Path) -> dict[str, Path]:
+    stem = base_path.stem
     return {
-        "raw_path": audio_path.with_name(f"{stem} - 原始逐字稿.txt"),
-        "article_path": audio_path.with_name(f"{stem} - 解析稿.md"),
-        "markdown_path": audio_path.with_name(f"{stem} - 逐字稿.md"),
-        "meta_path": audio_path.with_name(f"{stem} - 转写信息.json"),
+        "raw_path": base_path.with_name(f"{stem} - 原始逐字稿.txt"),
+        "article_path": base_path.with_name(f"{stem} - 解析稿.md"),
+        "markdown_path": base_path.with_name(f"{stem} - 逐字稿.md"),
+        "meta_path": base_path.with_name(f"{stem} - 转写信息.json"),
     }
 
 
@@ -115,7 +115,7 @@ def render_markdown(
 
 def write_sidecar_files(
     *,
-    audio_path: Path,
+    artifact_base_path: Path,
     source_url: str,
     provider: str,
     model: str,
@@ -123,10 +123,13 @@ def write_sidecar_files(
     clean_text: str,
     article_text: str | None,
     markdown_text: str,
+    source_media_path: Path | None,
     extra_meta: dict,
 ) -> dict[str, Path]:
-    paths = build_artifact_paths(audio_path)
-    legacy_clean_path = audio_path.with_name(f"{audio_path.stem} - 清洗逐字稿.txt")
+    paths = build_artifact_paths(artifact_base_path)
+    legacy_clean_path = artifact_base_path.with_name(f"{artifact_base_path.stem} - 清洗逐字稿.txt")
+
+    paths["markdown_path"].parent.mkdir(parents=True, exist_ok=True)
 
     paths["raw_path"].write_text(raw_text.strip() + "\n", encoding="utf-8")
     if legacy_clean_path.exists():
@@ -139,7 +142,8 @@ def write_sidecar_files(
     paths["meta_path"].write_text(
         json.dumps(
             {
-                "audio_path": str(audio_path),
+                "audio_path": str(source_media_path) if source_media_path else None,
+                "artifact_base_path": str(artifact_base_path),
                 "source_url": source_url,
                 "provider": provider,
                 "model": model,

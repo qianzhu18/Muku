@@ -18,8 +18,10 @@ except ImportError:
     import openrouter_backends as openrouter_backend
 
 
-PRESET_CHOICES = tuple(web_app.FORMAT_PRESETS.keys())
-DEFAULT_AUDIO_PRESET = "Best Audio (MP3)"
+DEFAULT_VIDEO_PRESET = web_app.VIDEO_PRESET_NAME
+DEFAULT_AUDIO_PRESET = web_app.AUDIO_PRESET_NAME
+DEFAULT_TRANSCRIPT_PRESET = web_app.TRANSCRIPT_PRESET_NAME
+PRESET_CHOICES = (DEFAULT_VIDEO_PRESET, DEFAULT_AUDIO_PRESET)
 AUDIO_EXTENSIONS = {".mp3", ".m4a", ".wav", ".flac", ".opus", ".aac", ".ogg", ".wma"}
 OUTPUT_CHOICES = ("text", "json", "paths")
 _UNSET = object()
@@ -121,6 +123,7 @@ def _job_summary(job: web_app.Job) -> dict:
         "download_path": job.download_path,
         "transcript_path": job.transcript_path,
         "provider": job.provider,
+        "transcript_route": job.transcript_route,
         "generate_transcript": job.generate_transcript,
         "preset": job.preset,
         "source_url": job.url,
@@ -137,6 +140,7 @@ def _runtime_overrides(
     *,
     output_dir: Path | None = None,
     cookies_path: Path | None = None,
+    cookies_from_browser: str | object = _UNSET,
     transcription_model: str | object = _UNSET,
     cleanup_model: str | object = _UNSET,
     article_model: str | object = _UNSET,
@@ -163,6 +167,7 @@ def _runtime_overrides(
 
     if cookies_path is not None:
         patch(web_app, "COOKIES_PATH", str(cookies_path.expanduser().resolve()))
+    patch(web_app, "COOKIES_FROM_BROWSER", cookies_from_browser)
 
     patch(web_app, "TRANSCRIPTION_LANGUAGE", language)
     patch(web_app, "TRANSCRIPTION_AUDIO_BITRATE", bitrate)
@@ -271,8 +276,11 @@ def _artifact_paths_from_target(target: Path) -> dict[str, Path]:
     target = target.expanduser().resolve()
     if target.name.endswith(" - 转写信息.json") and target.exists():
         meta = json.loads(target.read_text(encoding="utf-8"))
-        audio_path = Path(meta["audio_path"]).expanduser().resolve()
-        return web_app.build_artifact_paths(audio_path)
+        artifact_base = meta.get("artifact_base_path") or meta.get("audio_path")
+        if not artifact_base:
+            raise click.ClickException(f"该 metadata 缺少 artifact_base_path/audio_path：{target}")
+        base_path = Path(artifact_base).expanduser().resolve()
+        return web_app.build_artifact_paths(base_path)
 
     if target.suffix.lower() in AUDIO_EXTENSIONS:
         return web_app.build_artifact_paths(target)
@@ -307,7 +315,13 @@ def _summarize_metadata(metadata: dict) -> dict:
         "title",
         "platform",
         "artifact_dir",
+        "artifact_base_path",
         "prepared_audio_path",
+        "source_media_path",
+        "transcript_route",
+        "subtitle_source",
+        "subtitle_language",
+        "subtitle_format",
         "cleanup_provider",
         "cleanup_model",
         "cleanup_base_url",
@@ -368,6 +382,10 @@ def main() -> None:
     help="显式指定 cookies 文件路径。",
 )
 @click.option(
+    "--cookies-from-browser",
+    help="直接从浏览器读取 cookies，例如 chrome、edge:Profile 1、firefox::default。",
+)
+@click.option(
     "--output-dir",
     type=click.Path(path_type=Path, file_okay=False),
     help="下载和逐字稿输出目录。",
@@ -414,6 +432,7 @@ def capture_command(
     stdin_enabled: bool,
     cookies: bool,
     cookies_path: Path | None,
+    cookies_from_browser: str | None,
     output_dir: Path | None,
     output_mode: str,
     as_json: bool,
@@ -429,7 +448,7 @@ def capture_command(
     article_prompt_file: Path | None,
     keep_transcription_input: bool | None,
 ) -> None:
-    """从 URL 直接生成 MP3 和 Markdown 逐字稿。"""
+    """从 URL 直接生成 Markdown 逐字稿，优先提取字幕，失败回退到 MP3 转写。"""
     resolved_urls = _collect_line_inputs(
         values=urls,
         input_file=input_file,
@@ -440,6 +459,7 @@ def capture_command(
     with _runtime_overrides(
         output_dir=output_dir,
         cookies_path=cookies_path,
+        cookies_from_browser=cookies_from_browser if cookies_from_browser else _UNSET,
         transcription_model=transcription_model if transcription_model else _UNSET,
         cleanup_model=cleanup_model if cleanup_model else _UNSET,
         article_model=article_model if article_model else _UNSET,
@@ -455,8 +475,8 @@ def capture_command(
     ):
         results = _run_download_jobs(
             urls=resolved_urls,
-            preset=DEFAULT_AUDIO_PRESET,
-            use_cookies=cookies or cookies_path is not None,
+            preset=DEFAULT_TRANSCRIPT_PRESET,
+            use_cookies=cookies or cookies_path is not None or bool(cookies_from_browser),
             generate_transcript=True,
         )
     _write_result_file(results, result_file)
@@ -482,7 +502,7 @@ def capture_command(
 @click.option(
     "--transcript/--no-transcript",
     default=False,
-    help="仅在 Best Audio (MP3) 预设下生成逐字稿。",
+    help="仅在 Best Audio (MP3) 预设下生成逐字稿（兼容旧链路）。",
 )
 @click.option(
     "--cookies/--no-cookies",
@@ -493,6 +513,10 @@ def capture_command(
     "--cookies-path",
     type=click.Path(path_type=Path, dir_okay=False),
     help="显式指定 cookies 文件路径。",
+)
+@click.option(
+    "--cookies-from-browser",
+    help="直接从浏览器读取 cookies，例如 chrome、edge:Profile 1、firefox::default。",
 )
 @click.option(
     "--output-dir",
@@ -543,6 +567,7 @@ def download_command(
     transcript: bool,
     cookies: bool,
     cookies_path: Path | None,
+    cookies_from_browser: str | None,
     output_dir: Path | None,
     output_mode: str,
     as_json: bool,
@@ -572,6 +597,7 @@ def download_command(
     with _runtime_overrides(
         output_dir=output_dir,
         cookies_path=cookies_path,
+        cookies_from_browser=cookies_from_browser if cookies_from_browser else _UNSET,
         transcription_model=transcription_model if transcription_model else _UNSET,
         cleanup_model=cleanup_model if cleanup_model else _UNSET,
         article_model=article_model if article_model else _UNSET,
@@ -588,7 +614,7 @@ def download_command(
         results = _run_download_jobs(
             urls=resolved_urls,
             preset=preset,
-            use_cookies=cookies or cookies_path is not None,
+            use_cookies=cookies or cookies_path is not None or bool(cookies_from_browser),
             generate_transcript=transcript,
         )
     _write_result_file(results, result_file)
@@ -705,11 +731,14 @@ def audio_command(
 @click.option("--json", "as_json", is_flag=True, help="输出机器可读 JSON。")
 def doctor_command(as_json: bool) -> None:
     """检查依赖和云端接口配置状态。"""
+    subtitle_auth_configured = bool(web_app.COOKIES_PATH or web_app.COOKIES_FROM_BROWSER)
     report = {
         "download_dir": web_app.DOWNLOAD_DIR,
         "ffmpeg_bin": web_app.FFMPEG_BIN,
         "ffmpeg_found": shutil.which(web_app.FFMPEG_BIN) is not None,
         "yt_dlp_found": shutil.which("yt-dlp") is not None,
+        "transcript_route_strategy": "subtitle_first_then_audio_fallback",
+        "subtitle_auth_configured": subtitle_auth_configured,
         "transcription_enabled": web_app.ENABLE_TRANSCRIPTION,
         "transcription_model": web_app.OPENROUTER_TRANSCRIPTION_MODEL,
         "openrouter_key_configured": bool(web_app.transcribe_audio.__globals__.get("OPENROUTER_API_KEY")),
@@ -727,6 +756,12 @@ def doctor_command(as_json: bool) -> None:
         "article_prompt_exists": Path(web_app.ARTICLE_DRAFT_PROMPT_FILE).exists(),
         "cookies_path": web_app.COOKIES_PATH or None,
         "cookies_exists": bool(web_app.COOKIES_PATH) and Path(web_app.COOKIES_PATH).exists(),
+        "cookies_from_browser": web_app.COOKIES_FROM_BROWSER or None,
+        "transcript_capture_ready": (
+            shutil.which("yt-dlp") is not None
+            and web_app.ENABLE_TRANSCRIPTION
+            and bool(web_app.transcribe_audio.__globals__.get("OPENROUTER_API_KEY"))
+        ),
     }
 
     if as_json:

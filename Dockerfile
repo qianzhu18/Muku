@@ -22,7 +22,10 @@ RUN set -e; \
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY requirements.txt .
+COPY pyproject.toml README.md requirements.txt ./
+COPY webui/ /app/webui/
+COPY 角色提示词.md /app/角色提示词.md
+COPY 解析提示词.md /app/解析提示词.md
 RUN set -e; \
     PIP_URL="${PIP_INDEX_URL}"; \
     PIP_HOST=$(echo "$PIP_URL" | sed -E 's#^https?://##; s#/.*##'); \
@@ -30,13 +33,10 @@ RUN set -e; \
         echo "PIP mirror ${PIP_HOST} not resolvable, falling back to ${PIP_INDEX_URL_FALLBACK}"; \
         PIP_URL="${PIP_INDEX_URL_FALLBACK}"; \
     fi; \
-    pip install --no-cache-dir -r requirements.txt -i "$PIP_URL"
-
-COPY webui/ /app/
-COPY 角色提示词.md /app/角色提示词.md
-COPY 解析提示词.md /app/解析提示词.md
+    pip install --no-cache-dir -r requirements.txt -i "$PIP_URL"; \
+    pip install --no-cache-dir --no-deps .
 
 ENV DOWNLOAD_DIR=/downloads
 EXPOSE 8080
 
-CMD ["python", "app.py"]
+CMD ["video-downloade", "serve", "--host", "0.0.0.0", "--port", "8080"]

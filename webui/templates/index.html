@@ -41,7 +41,7 @@
       <section class="card">
         <div class="card-header">
           <h2>新建任务</h2>
-          <p>支持 YouTube、Bilibili 等主流平台。你可以单独下载 MP3，也可以在 MP3 模式下勾选“下载后提取 MD 逐字稿”。</p>
+          <p>支持 YouTube、Bilibili 等主流平台。现在分成三种明确模式：最高画质视频、MP3 音频、Markdown 逐字稿。</p>
         </div>
 
         <form id="download-form">
@@ -66,22 +66,19 @@
             </div>
             <div style="display: flex; flex-direction: column; gap: 10px; padding-top: 24px;">
               <div style="display: flex; align-items: center;">
-                <input type="checkbox" id="generate-transcript" style="width: auto; margin-right: 8px;" />
-                <label for="generate-transcript" style="margin: 0; cursor: pointer;">
-                  下载后提取 MD 逐字稿
-                </label>
-              </div>
-              <div style="display: flex; align-items: center;">
                 <input type="checkbox" id="use-cookies" style="width: auto; margin-right: 8px;" />
                 <label for="use-cookies" style="margin: 0; cursor: pointer;">
-                  启用 Cookies (会员/限速)
+                  启用 Cookies (`cookies.txt` / 浏览器登录态)
                 </label>
               </div>
             </div>
           </div>
 
-          <p id="transcript-hint" style="margin: -6px 0 16px; font-size: 0.84rem; color: var(--text-sub);">
-            如需生成逐字稿，请选择 `Best Audio (MP3)`，再勾选“下载后提取 MD 逐字稿”。
+          <p id="mode-hint" style="margin: -6px 0 16px; font-size: 0.84rem; color: var(--text-sub);">
+            `Markdown 逐字稿` 模式会先尝试直接提取平台字幕；如果拿不到，再自动回退到 MP3 转写。
+          </p>
+          <p id="cookies-hint" style="margin: -10px 0 16px; font-size: 0.82rem; color: var(--text-sub);">
+            当前未检测到 Cookies 配置。YouTube 和部分 B 站视频可能无法直接提取字幕。
           </p>
 
           <button type="submit" id="start-btn" class="btn-primary">开始下载</button>

@@ -4,8 +4,9 @@ const taskList = document.getElementById("task-list");
 const form = document.getElementById("download-form");
 const startBtn = document.getElementById("start-btn");
 const queueCount = document.getElementById("queue-count");
-const transcriptCheckbox = document.getElementById("generate-transcript");
-const transcriptHint = document.getElementById("transcript-hint");
+const modeHint = document.getElementById("mode-hint");
+const cookiesHint = document.getElementById("cookies-hint");
+const cookiesCheckbox = document.getElementById("use-cookies");
 
 (function init() {
   config.presets.forEach((preset) => {
@@ -14,13 +15,14 @@ const transcriptHint = document.getElementById("transcript-hint");
     presetSelect.appendChild(opt);
   });
   presetSelect.value = config.defaultPreset;
+  cookiesCheckbox.checked = Boolean(config.cookiesConfigured);
   updateSubmitLabel();
-  updateTranscriptToggle();
   presetSelect.addEventListener("change", () => {
-    updateTranscriptToggle();
+    updateModeHint();
     updateSubmitLabel();
   });
-  transcriptCheckbox.addEventListener("change", updateSubmitLabel);
+  updateModeHint();
+  updateCookiesHint();
   setInterval(poll, 1500);
   poll();
 })();
@@ -30,7 +32,7 @@ form.addEventListener("submit", async (event) => {
   const url = document.getElementById("url").value;
   const preset = presetSelect.value;
   const cookies = document.getElementById("use-cookies").checked;
-  const generateTranscript = transcriptCheckbox.checked;
+  const generateTranscript = preset === config.transcriptPreset;
 
   startBtn.disabled = true;
   startBtn.textContent = "提交中...";
@@ -91,9 +93,7 @@ function render(tasks) {
         : task.download_path
           ? `<div class="task-path">文件: ${escapeHtml(task.download_path)}</div>`
           : "";
-      const modeHint = task.generate_transcript
-        ? '<div class="task-path">模式: MP3 + Markdown 逐字稿</div>'
-        : '<div class="task-path">模式: 仅下载文件</div>';
+      const taskModeHint = `<div class="task-path">模式: ${escapeHtml(describePreset(task.preset, task.transcript_route))}</div>`;
 
       return `
         <li class="task-item">
@@ -102,7 +102,7 @@ function render(tasks) {
                 <div class="task-status" style="color: ${color}">
                     ${escapeHtml(task.error ? task.error : task.status)}
                 </div>
-                ${modeHint}
+                ${taskModeHint}
                 ${outputHint}
             </div>
             ${
@@ -120,23 +120,58 @@ function render(tasks) {
 
 function updateSubmitLabel() {
   const preset = presetSelect.value;
-  const isAudioPreset = preset === config.audioPreset;
-  if (isAudioPreset && config.transcriptionEnabled && transcriptCheckbox.checked) {
-    startBtn.textContent = "开始下载并转写";
+  if (preset === config.transcriptPreset) {
+    startBtn.textContent = "开始提取逐字稿";
     return;
   }
-  startBtn.textContent = "开始下载";
+  if (preset === config.audioPreset) {
+    startBtn.textContent = "开始下载 MP3";
+    return;
+  }
+  startBtn.textContent = "开始下载视频";
 }
 
-function updateTranscriptToggle() {
-  const isAudioPreset = presetSelect.value === config.audioPreset;
-  transcriptCheckbox.disabled = !isAudioPreset;
-  if (!isAudioPreset) {
-    transcriptCheckbox.checked = false;
+function updateModeHint() {
+  const preset = presetSelect.value;
+  if (preset === config.transcriptPreset) {
+    const cookiesNote = config.cookiesConfigured
+      ? "已检测到 Cookies 配置，字幕直提命中率会更高。"
+      : "当前未检测到 Cookies，YouTube 和部分 B 站视频更可能直接回退到 MP3 转写。";
+    modeHint.textContent =
+      `当前会先尝试直接提取平台字幕；如果没有可用字幕，再自动下载 MP3 并转写，最后生成逐字稿和解析稿。${cookiesNote}`;
+    return;
   }
-  transcriptHint.textContent = isAudioPreset
-    ? "当前是 MP3 下载模式。勾选后会在下载完成后自动生成 Markdown 逐字稿。"
-    : "逐字稿提取仅在 Best Audio (MP3) 模式下可用。";
+  if (preset === config.audioPreset) {
+    modeHint.textContent = "当前只下载 MP3 音频，不自动生成 Markdown 逐字稿。";
+    return;
+  }
+  modeHint.textContent = "当前下载最高画质视频，优先保留高分辨率并合并为 MP4。";
+}
+
+function updateCookiesHint() {
+  if (!config.cookiesConfigured) {
+    cookiesHint.textContent =
+      "当前未检测到 Cookies 配置。建议在 .env 里配置 COOKIES_PATH 或 COOKIES_FROM_BROWSER，提升 YouTube / Bilibili 字幕直提成功率。";
+    return;
+  }
+  const source = config.cookiesSource === "browser" ? "浏览器登录态" : "cookies.txt";
+  cookiesHint.textContent = `当前已检测到 ${source} 配置。勾选“启用 Cookies”后，会优先用登录态访问平台字幕接口。`;
+}
+
+function describePreset(preset, route) {
+  if (preset === config.transcriptPreset) {
+    if (route === "direct_subtitles") {
+      return "MD 逐字稿（直提字幕）";
+    }
+    if (route === "subtitle_probe_fallback_to_audio") {
+      return "MD 逐字稿（字幕失败后回退音频转写）";
+    }
+    return "MD 逐字稿（字幕优先）";
+  }
+  if (preset === config.audioPreset) {
+    return "MP3 音频";
+  }
+  return "最高画质视频";
 }
 
 function escapeHtml(value) {

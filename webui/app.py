@@ -1,9 +1,14 @@
+import html
 import json
 import os
+import re
+import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
+import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -90,6 +95,7 @@ def env_bool(name: str, default: bool) -> bool:
 APP_TITLE = "Downloader by Qianzhu"
 DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", str(Path.home() / "Downloads"))
 COOKIES_PATH = os.environ.get("COOKIES_PATH", "")
+COOKIES_FROM_BROWSER = os.environ.get("COOKIES_FROM_BROWSER", "").strip()
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "2"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8080"))
@@ -98,21 +104,47 @@ TRANSCRIPTION_LANGUAGE = os.environ.get("TRANSCRIPTION_LANGUAGE", "auto")
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")
 TRANSCRIPTION_AUDIO_BITRATE = os.environ.get("TRANSCRIPTION_AUDIO_BITRATE", "48k")
 KEEP_TRANSCRIPTION_INPUT = env_bool("KEEP_TRANSCRIPTION_INPUT", False)
+VIDEO_PRESET_NAME = "Highest Video (MP4)"
+AUDIO_PRESET_NAME = "Best Audio (MP3)"
+TRANSCRIPT_PRESET_NAME = "Markdown 逐字稿（字幕优先）"
+SUBTITLE_LANGUAGES = tuple(
+    lang.strip()
+    for lang in os.environ.get(
+        "SUBTITLE_LANGUAGES",
+        "zh-Hans,zh-CN,zh-TW,zh-HK,zh,cmn-Hans-CN,en,en-US",
+    ).split(",")
+    if lang.strip()
+)
+SUBTITLE_FORMATS = os.environ.get("SUBTITLE_FORMATS", "json3/vtt/srt/ttml/best")
+TIMECODE_LINE_RE = re.compile(
+    r"^\s*(\d+:)?\d{2}:\d{2}([.,]\d{3})?\s*-->\s*(\d+:)?\d{2}:\d{2}([.,]\d{3})?.*$"
+)
+NUMERIC_CUE_RE = re.compile(r"^\d+$")
+XML_TAG_RE = re.compile(r"<[^>]+>")
+COOKIES_FROM_BROWSER_RE = re.compile(
+    r"""(?x)
+    (?P<name>[^+:]+)
+    (?:\s*\+\s*(?P<keyring>[^:]+))?
+    (?:\s*:\s*(?!:)(?P<profile>.+?))?
+    (?:\s*::\s*(?P<container>.+))?
+    """
+)
 
 FORMAT_PRESETS = {
-    "Best Video (MP4)": {
-        "format": "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "transcribe": False,
-    },
-    "Best Audio (MP3)": {
-        "format": "bestaudio/best",
-        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}],
-        "transcribe": True,
-    },
-    "4K / High Res": {
+    VIDEO_PRESET_NAME: {
         "format": "bestvideo+bestaudio/best",
         "merge_output_format": "mp4",
         "transcribe": False,
+    },
+    AUDIO_PRESET_NAME: {
+        "format": "bestaudio/best",
+        "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3"}],
+        "transcribe": False,
+    },
+    TRANSCRIPT_PRESET_NAME: {
+        "format": "bestaudio/best",
+        "transcribe": True,
+        "transcript_only": True,
     },
 }
 
@@ -134,6 +166,7 @@ class Job:
     download_path: str | None = None
     transcript_path: str | None = None
     provider: str | None = None
+    transcript_route: str | None = None
     backend_error: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
@@ -192,20 +225,36 @@ def progress_hook(job: Job):
         elif data["status"] == "finished":
             with job.lock:
                 job.progress = 100
-                job.status = "Download finished. Preparing transcript..."
+                job.status = (
+                    "Download finished. Preparing transcript..."
+                    if job.generate_transcript
+                    else "Download finished."
+                )
 
     return hook
 
 
-def output_template() -> str:
-    return str(Path(DOWNLOAD_DIR) / "%(title)s [%(id)s]" / "%(title)s [%(id)s].%(ext)s")
+def output_template(base_dir: str | Path | None = None) -> str:
+    target_dir = Path(base_dir) if base_dir is not None else Path(DOWNLOAD_DIR)
+    return str(target_dir / "%(title)s [%(id)s]" / "%(title)s [%(id)s].%(ext)s")
 
 
-def build_ydl_options(job: Job) -> dict:
-    preset_conf = FORMAT_PRESETS[job.preset]
+def parse_cookies_from_browser_spec(spec: str) -> tuple[str, str | None, str | None, str | None]:
+    match = COOKIES_FROM_BROWSER_RE.fullmatch(spec.strip())
+    if match is None:
+        raise ValueError(f"Invalid COOKIES_FROM_BROWSER value: {spec}")
+    browser_name, keyring, profile, container = match.group("name", "keyring", "profile", "container")
+    return (browser_name.lower(), profile, keyring.upper() if keyring else None, container)
+
+
+def build_ydl_options(job: Job, *, preset_name: str | None = None, base_dir: str | Path | None = None) -> dict:
+    target_preset = preset_name or job.preset
+    preset_conf = FORMAT_PRESETS[target_preset]
+    if preset_conf.get("transcript_only"):
+        preset_conf = FORMAT_PRESETS[AUDIO_PRESET_NAME]
     options = {
         "format": preset_conf["format"],
-        "outtmpl": output_template(),
+        "outtmpl": output_template(base_dir),
         "progress_hooks": [progress_hook(job)],
         "logger": YtdlpLogger(job),
         "quiet": True,
@@ -223,12 +272,14 @@ def build_ydl_options(job: Job) -> dict:
         options["postprocessors"] = preset_conf["postprocessors"]
     if job.use_cookies and COOKIES_PATH:
         options["cookiefile"] = COOKIES_PATH
+    elif job.use_cookies and COOKIES_FROM_BROWSER:
+        options["cookiesfrombrowser"] = parse_cookies_from_browser_spec(COOKIES_FROM_BROWSER)
     return options
 
 
 def resolve_media_path(expected_path: Path, preset: str) -> Path:
     artifact_dir = expected_path.parent
-    if preset == "Best Audio (MP3)":
+    if preset == AUDIO_PRESET_NAME:
         candidate = expected_path.with_suffix(".mp3")
         if candidate.exists():
             return candidate
@@ -250,26 +301,18 @@ def resolve_media_path(expected_path: Path, preset: str) -> Path:
     raise RuntimeError("Downloaded media file was not found.")
 
 
-def find_recent_media_path(created_at: float, preset: str) -> Path:
-    exts = {".mp3"} if preset == "Best Audio (MP3)" else {".mp4", ".mkv", ".webm", ".mov", ".m4a"}
-    root = Path(DOWNLOAD_DIR)
-    candidates: list[Path] = []
-    for path in root.rglob("*"):
-        if not path.is_file():
-            continue
-        if path.suffix.lower() not in exts:
-            continue
-        try:
-            if path.stat().st_mtime + 5 < created_at:
-                continue
-        except FileNotFoundError:
-            continue
-        candidates.append(path)
+def primary_info_dict(info: dict | None) -> dict | None:
+    if not isinstance(info, dict):
+        return None
 
-    if not candidates:
-        raise RuntimeError("Downloaded media file was not found.")
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
-    return candidates[0]
+    if info.get("_type") in {"playlist", "multi_video"}:
+        for entry in info.get("entries") or []:
+            primary_entry = primary_info_dict(entry)
+            if primary_entry:
+                return primary_entry
+        return None
+
+    return info
 
 
 def prepare_audio_for_transcription(audio_path: Path) -> Path:
@@ -306,8 +349,207 @@ def prepare_audio_for_transcription(audio_path: Path) -> Path:
         return audio_path
 
 
-def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
-    artifact_paths = build_artifact_paths(audio_path)
+def sanitize_output_component(value: str) -> str:
+    sanitized = re.sub(r'[<>:"/\\\\|?*\x00-\x1f]', "_", value).strip().rstrip(".")
+    return sanitized or "untitled"
+
+
+def build_artifact_base_path(info: dict) -> Path:
+    title = info.get("title") or info.get("id") or "Untitled"
+    media_id = info.get("id") or uuid.uuid4().hex[:8]
+    stem = sanitize_output_component(f"{title} [{media_id}]")
+    return Path(DOWNLOAD_DIR) / stem / stem
+
+
+def build_subtitle_probe_options(job: Job, *, temp_dir: Path) -> dict:
+    options = build_ydl_options(job, preset_name=AUDIO_PRESET_NAME, base_dir=temp_dir)
+    options.pop("postprocessors", None)
+    options["progress_hooks"] = []
+    options["skip_download"] = True
+    options["writesubtitles"] = True
+    options["writeautomaticsub"] = True
+    options["subtitleslangs"] = list(SUBTITLE_LANGUAGES)
+    options["subtitlesformat"] = SUBTITLE_FORMATS
+    return options
+
+
+def _subtitle_language_rank(lang: str) -> int:
+    lowered = lang.lower()
+    for index, preferred in enumerate(SUBTITLE_LANGUAGES):
+        if lowered == preferred.lower():
+            return index
+    return len(SUBTITLE_LANGUAGES)
+
+
+def _collect_subtitle_candidates(info: dict) -> list[dict]:
+    requested_subtitles = info.get("requested_subtitles") or {}
+    manual_languages = set((info.get("subtitles") or {}).keys())
+    candidates: list[dict] = []
+    for lang, subtitle_info in requested_subtitles.items():
+        filepath = subtitle_info.get("filepath")
+        if not filepath:
+            continue
+        path = Path(filepath)
+        if not path.exists():
+            continue
+        source = "manual subtitles" if lang in manual_languages else "automatic captions"
+        candidates.append(
+            {
+                "path": path,
+                "lang": lang,
+                "ext": subtitle_info.get("ext") or path.suffix.lstrip(".") or "unknown",
+                "source": source,
+            }
+        )
+    candidates.sort(
+        key=lambda item: (
+            item["source"] != "manual subtitles",
+            _subtitle_language_rank(item["lang"]),
+            item["ext"],
+        )
+    )
+    return candidates
+
+
+def _subtitle_text_from_json(payload: object) -> str:
+    fragments: list[str] = []
+
+    def append_text(value: object) -> None:
+        if not isinstance(value, str):
+            return
+        normalized = value.replace("\n", " ").strip()
+        if normalized:
+            fragments.append(normalized)
+
+    def walk(node: object) -> None:
+        if isinstance(node, dict):
+            for key in ("utf8", "content", "text"):
+                if key in node:
+                    append_text(node.get(key))
+                    return
+            for key in ("segs", "body", "events", "lines", "paragraphs", "results", "segments", "items"):
+                if key in node:
+                    walk(node[key])
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(payload)
+    return "\n".join(_dedupe_caption_lines(fragments))
+
+
+def _dedupe_caption_lines(lines: list[str]) -> list[str]:
+    deduped: list[str] = []
+    previous = None
+    for line in lines:
+        normalized = re.sub(r"\s+", " ", line).strip()
+        if not normalized or normalized == previous:
+            continue
+        deduped.append(normalized)
+        previous = normalized
+    return deduped
+
+
+def _subtitle_text_from_timed_text(raw_text: str) -> str:
+    lines: list[str] = []
+    for line in raw_text.replace("\r\n", "\n").replace("\r", "\n").split("\n"):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped in {"WEBVTT", "NOTE"} or stripped.startswith(("Kind:", "Language:")):
+            continue
+        if NUMERIC_CUE_RE.match(stripped) or TIMECODE_LINE_RE.match(stripped):
+            continue
+        cleaned = html.unescape(XML_TAG_RE.sub("", stripped)).strip()
+        if cleaned:
+            lines.append(cleaned)
+    return "\n".join(_dedupe_caption_lines(lines))
+
+
+def _subtitle_text_from_ttml(raw_text: str) -> str:
+    try:
+        root = ET.fromstring(raw_text)
+    except ET.ParseError:
+        return _subtitle_text_from_timed_text(raw_text)
+
+    fragments: list[str] = []
+    for elem in root.iter():
+        tag_name = elem.tag.rsplit("}", 1)[-1]
+        if tag_name not in {"p", "span"}:
+            continue
+        text = "".join(elem.itertext()).strip()
+        text = html.unescape(text)
+        if text:
+            fragments.append(text)
+    return "\n".join(_dedupe_caption_lines(fragments))
+
+
+def load_subtitle_text(path: Path) -> str:
+    raw_text = path.read_text(encoding="utf-8-sig")
+    suffix = path.suffix.lower()
+    if suffix in {".json", ".json3"}:
+        try:
+            return _subtitle_text_from_json(json.loads(raw_text))
+        except json.JSONDecodeError:
+            return raw_text
+    if suffix in {".ttml", ".xml", ".srv3"}:
+        return _subtitle_text_from_ttml(raw_text)
+    return _subtitle_text_from_timed_text(raw_text)
+
+
+def try_extract_direct_subtitles(job: Job) -> dict | None:
+    set_job_state(job, status="Checking platform subtitles...")
+    temp_dir = Path(tempfile.mkdtemp(prefix="qianzhu-subs-"))
+    try:
+        with yt_dlp.YoutubeDL(build_subtitle_probe_options(job, temp_dir=temp_dir)) as ydl:
+            info = ydl.extract_info(job.url, download=True)
+
+        if not isinstance(info, dict):
+            return None
+
+        with job.lock:
+            job.title = info.get("title", job.title)
+
+        candidates = _collect_subtitle_candidates(info)
+        for candidate in candidates:
+            raw_text = normalize_raw_transcript_text(load_subtitle_text(candidate["path"])).strip()
+            if not raw_text:
+                continue
+            return {
+                "artifact_base_path": build_artifact_base_path(info),
+                "raw_text": raw_text,
+                "provider": "yt-dlp subtitles",
+                "model": f'{candidate["source"]} · {candidate["lang"]} · {candidate["ext"]}',
+                "response": {
+                    "subtitle_language": candidate["lang"],
+                    "subtitle_format": candidate["ext"],
+                    "subtitle_source": candidate["source"],
+                },
+                "meta": {
+                    "transcript_route": "direct_subtitles",
+                    "subtitle_language": candidate["lang"],
+                    "subtitle_format": candidate["ext"],
+                    "subtitle_source": candidate["source"],
+                },
+            }
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    return None
+
+
+def run_text_pipeline(
+    job: Job,
+    *,
+    artifact_base_path: Path,
+    raw_text: str,
+    transcript_provider: str,
+    transcript_model: str,
+    transcript_response: dict | None = None,
+    source_media_path: Path | None = None,
+    prepared_audio_path: Path | None = None,
+    extra_meta: dict | None = None,
+) -> None:
+    artifact_paths = build_artifact_paths(artifact_base_path)
     raw_path = artifact_paths["raw_path"]
     article_path = artifact_paths["article_path"]
     markdown_path = artifact_paths["markdown_path"]
@@ -315,25 +557,141 @@ def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
 
     article_ready = article_path.exists() or not ENABLE_ARTICLE_DRAFT
     if raw_path.exists() and markdown_path.exists() and meta_path.exists() and article_ready:
-        job.artifact_dir = str(audio_path.parent)
+        job.artifact_dir = str(artifact_base_path.parent)
         job.transcript_path = str(markdown_path)
-        job.provider = "openrouter"
+        job.provider = transcript_provider
+        if meta_path.exists():
+            try:
+                metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+                job.transcript_route = metadata.get("transcript_route")
+            except json.JSONDecodeError:
+                job.transcript_route = None
         return
 
-    prepared_audio = audio_path
     cleanup_provider = None
     cleanup_model = None
     cleanup_response = None
     cleanup_error = None
-    transcript_response = None
-    transcript_provider = "openrouter"
-    transcript_model = OPENROUTER_TRANSCRIPTION_MODEL
     article_text = None
     article_provider = None
     article_model = None
     article_response = None
     article_error = None
     platform = detect_platform(job.url)
+    metadata = dict(extra_meta or {})
+
+    set_job_state(job, status="Cleaning transcript...")
+    clean_text = clean_transcript_text(raw_text) or raw_text
+
+    if AI_CLEANUP_ENABLED:
+        try:
+            set_job_state(job, status=f"Cleaning with {AI_CLEANUP_MODEL}...")
+            cleanup_result = cleanup_transcript(
+                clean_text,
+                title=job.title,
+                source_url=job.url,
+            )
+            candidate_text = clean_transcript_text(cleanup_result["text"]).strip()
+            if candidate_text:
+                clean_text = candidate_text
+            cleanup_provider = cleanup_result["provider"]
+            cleanup_model = cleanup_result["model"]
+            cleanup_response = cleanup_result["raw_response"]
+        except Exception as exc:
+            cleanup_error = str(exc)
+            if not AI_CLEANUP_FALLBACK_LOCAL:
+                raise
+            set_job_state(job, status="AI cleanup unavailable. Falling back to local cleanup...")
+
+    if article_path.exists():
+        article_text = article_path.read_text(encoding="utf-8").strip()
+    elif ENABLE_ARTICLE_DRAFT:
+        try:
+            set_job_state(job, status=f"Generating article with {ARTICLE_DRAFT_MODEL}...")
+            article_result = generate_ai_article_draft(
+                text=clean_text,
+                title=job.title,
+                source_url=job.url,
+                platform=platform,
+            )
+            article_text = article_result["text"].strip()
+            article_provider = article_result["provider"]
+            article_model = article_result["model"]
+            article_response = article_result["raw_response"]
+        except Exception as exc:
+            article_error = str(exc)
+            set_job_state(job, status=f"GLM article unavailable. Falling back to {OPENROUTER_ARTICLE_MODEL}...")
+            try:
+                system_prompt = Path(ARTICLE_DRAFT_PROMPT_FILE).read_text(encoding="utf-8").strip()
+                article_result = generate_openrouter_article_draft(
+                    transcript_text=clean_text,
+                    system_prompt=system_prompt,
+                    title=job.title,
+                    source_url=job.url,
+                    platform=platform,
+                )
+                article_text = article_result["text"].strip()
+                article_provider = article_result["provider"]
+                article_model = article_result["model"]
+                article_response = article_result["raw_response"]
+            except Exception as fallback_exc:
+                article_error = f"{article_error} | OpenRouter fallback failed: {fallback_exc}"
+
+    markdown_text = render_markdown(
+        title=job.title,
+        raw_text=raw_text,
+        clean_text=clean_text,
+        article_text=article_text,
+    )
+
+    metadata.update(
+        {
+            "title": job.title,
+            "platform": platform,
+            "artifact_dir": str(artifact_base_path.parent),
+            "prepared_audio_path": str(prepared_audio_path) if prepared_audio_path else None,
+            "cleanup_provider": cleanup_provider,
+            "cleanup_model": cleanup_model,
+            "cleanup_base_url": AI_CLEANUP_BASE_URL,
+            "cleanup_prompt_file": AI_CLEANUP_PROMPT_FILE,
+            "cleanup_error": cleanup_error,
+            "article_provider": article_provider,
+            "article_model": article_model,
+            "article_base_url": ARTICLE_DRAFT_BASE_URL,
+            "article_prompt_file": ARTICLE_DRAFT_PROMPT_FILE,
+            "article_error": article_error,
+            "transcription_response": transcript_response,
+            "cleanup_response": cleanup_response,
+            "article_response": article_response,
+        }
+    )
+
+    artifact_paths = write_sidecar_files(
+        artifact_base_path=artifact_base_path,
+        source_url=job.url,
+        source_media_path=source_media_path,
+        provider=transcript_provider,
+        model=transcript_model,
+        raw_text=raw_text,
+        clean_text=clean_text,
+        article_text=article_text,
+        markdown_text=markdown_text,
+        extra_meta=metadata,
+    )
+
+    job.artifact_dir = str(artifact_base_path.parent)
+    job.transcript_path = str(artifact_paths["markdown_path"])
+    job.provider = transcript_provider
+    job.transcript_route = metadata.get("transcript_route")
+
+
+def run_transcription_pipeline(job: Job, audio_path: Path, *, extra_meta: dict | None = None) -> None:
+    artifact_paths = build_artifact_paths(audio_path)
+    raw_path = artifact_paths["raw_path"]
+    prepared_audio = audio_path
+    transcript_response = None
+    transcript_provider = "openrouter"
+    transcript_model = OPENROUTER_TRANSCRIPTION_MODEL
 
     try:
         if raw_path.exists():
@@ -356,103 +714,18 @@ def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
             transcript_model = transcript_result["model"]
             transcript_response = transcript_result["raw_response"]
 
-        set_job_state(job, status="Cleaning transcript...")
-        clean_text = clean_transcript_text(raw_text) or raw_text
-
-        if AI_CLEANUP_ENABLED:
-            try:
-                set_job_state(job, status=f"Cleaning with {AI_CLEANUP_MODEL}...")
-                cleanup_result = cleanup_transcript(
-                    clean_text,
-                    title=job.title,
-                    source_url=job.url,
-                )
-                candidate_text = clean_transcript_text(cleanup_result["text"]).strip()
-                if candidate_text:
-                    clean_text = candidate_text
-                cleanup_provider = cleanup_result["provider"]
-                cleanup_model = cleanup_result["model"]
-                cleanup_response = cleanup_result["raw_response"]
-            except Exception as exc:
-                cleanup_error = str(exc)
-                if not AI_CLEANUP_FALLBACK_LOCAL:
-                    raise
-                set_job_state(job, status="AI cleanup unavailable. Falling back to local cleanup...")
-
-        if article_path.exists():
-            article_text = article_path.read_text(encoding="utf-8").strip()
-        elif ENABLE_ARTICLE_DRAFT:
-            try:
-                set_job_state(job, status=f"Generating article with {ARTICLE_DRAFT_MODEL}...")
-                article_result = generate_ai_article_draft(
-                    text=clean_text,
-                    title=job.title,
-                    source_url=job.url,
-                    platform=platform,
-                )
-                article_text = article_result["text"].strip()
-                article_provider = article_result["provider"]
-                article_model = article_result["model"]
-                article_response = article_result["raw_response"]
-            except Exception as exc:
-                article_error = str(exc)
-                set_job_state(job, status=f"GLM article unavailable. Falling back to {OPENROUTER_ARTICLE_MODEL}...")
-                try:
-                    system_prompt = Path(ARTICLE_DRAFT_PROMPT_FILE).read_text(encoding="utf-8").strip()
-                    article_result = generate_openrouter_article_draft(
-                        transcript_text=clean_text,
-                        system_prompt=system_prompt,
-                        title=job.title,
-                        source_url=job.url,
-                        platform=platform,
-                    )
-                    article_text = article_result["text"].strip()
-                    article_provider = article_result["provider"]
-                    article_model = article_result["model"]
-                    article_response = article_result["raw_response"]
-                except Exception as fallback_exc:
-                    article_error = f"{article_error} | OpenRouter fallback failed: {fallback_exc}"
-
-        markdown_text = render_markdown(
-            title=job.title,
+        metadata = {"transcript_route": "audio_transcription", **(extra_meta or {})}
+        run_text_pipeline(
+            job,
+            artifact_base_path=audio_path,
             raw_text=raw_text,
-            clean_text=clean_text,
-            article_text=article_text,
+            transcript_provider=transcript_provider,
+            transcript_model=transcript_model,
+            transcript_response=transcript_response,
+            source_media_path=audio_path,
+            prepared_audio_path=prepared_audio,
+            extra_meta=metadata,
         )
-
-        artifact_paths = write_sidecar_files(
-            audio_path=audio_path,
-            source_url=job.url,
-            provider=transcript_provider,
-            model=transcript_model,
-            raw_text=raw_text,
-            clean_text=clean_text,
-            article_text=article_text,
-            markdown_text=markdown_text,
-            extra_meta={
-                "title": job.title,
-                "platform": platform,
-                "artifact_dir": str(audio_path.parent),
-                "prepared_audio_path": str(prepared_audio),
-                "cleanup_provider": cleanup_provider,
-                "cleanup_model": cleanup_model,
-                "cleanup_base_url": AI_CLEANUP_BASE_URL,
-                "cleanup_prompt_file": AI_CLEANUP_PROMPT_FILE,
-                "cleanup_error": cleanup_error,
-                "article_provider": article_provider,
-                "article_model": article_model,
-                "article_base_url": ARTICLE_DRAFT_BASE_URL,
-                "article_prompt_file": ARTICLE_DRAFT_PROMPT_FILE,
-                "article_error": article_error,
-                "transcription_response": transcript_response,
-                "cleanup_response": cleanup_response,
-                "article_response": article_response,
-            },
-        )
-
-        job.artifact_dir = str(audio_path.parent)
-        job.transcript_path = str(artifact_paths["markdown_path"])
-        job.provider = transcript_provider
     finally:
         if (
             prepared_audio != audio_path
@@ -462,44 +735,88 @@ def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
             prepared_audio.unlink(missing_ok=True)
 
 
+def download_media(job: Job, preset_name: str) -> Path:
+    options = build_ydl_options(job, preset_name=preset_name)
+    selected_info: dict | None = None
+    with yt_dlp.YoutubeDL(options) as ydl:
+        try:
+            preview_info = primary_info_dict(ydl.extract_info(job.url, download=False))
+            if preview_info is not None:
+                selected_info = preview_info
+                with job.lock:
+                    job.title = preview_info.get("title", job.url)
+        except Exception:
+            pass
+
+        download_info = primary_info_dict(ydl.extract_info(job.url, download=True))
+        if download_info is not None:
+            selected_info = download_info
+            with job.lock:
+                job.title = download_info.get("title", job.title)
+
+        if selected_info is None:
+            raise RuntimeError("Unable to determine downloaded media path safely.")
+
+        expected_path = Path(ydl.prepare_filename(selected_info))
+    media_path = resolve_media_path(expected_path, preset_name)
+    job.download_path = str(media_path)
+    job.artifact_dir = str(media_path.parent)
+    return media_path
+
+
+def run_transcript_job(job: Job) -> None:
+    subtitle_probe_error = None
+    subtitle_result = None
+
+    try:
+        subtitle_result = try_extract_direct_subtitles(job)
+    except Exception as exc:
+        subtitle_probe_error = str(exc)
+
+    if subtitle_result:
+        set_job_state(job, status="Subtitles found. Building Markdown transcript...")
+        run_text_pipeline(
+            job,
+            artifact_base_path=subtitle_result["artifact_base_path"],
+            raw_text=subtitle_result["raw_text"],
+            transcript_provider=subtitle_result["provider"],
+            transcript_model=subtitle_result["model"],
+            transcript_response=subtitle_result["response"],
+            extra_meta=subtitle_result["meta"],
+        )
+        return
+
+    fallback_message = (
+        "Subtitle lookup unavailable. Falling back to MP3 transcription..."
+        if subtitle_probe_error
+        else "No usable subtitles found. Falling back to MP3 transcription..."
+    )
+    set_job_state(job, status=fallback_message)
+    media_path = download_media(job, AUDIO_PRESET_NAME)
+    run_transcription_pipeline(
+        job,
+        media_path,
+        extra_meta={
+            "transcript_route": "subtitle_probe_fallback_to_audio",
+            "subtitle_probe_error": subtitle_probe_error,
+        },
+    )
+
+
 def run_job(job: Job) -> Job:
     try:
         set_job_state(job, status="Starting...")
         Path(DOWNLOAD_DIR).mkdir(parents=True, exist_ok=True)
-        options = build_ydl_options(job)
-        preset_conf = FORMAT_PRESETS[job.preset]
-
-        expected_path: Path | None = None
-        with yt_dlp.YoutubeDL(options) as ydl:
-            preview_info = None
-            try:
-                preview_info = ydl.extract_info(job.url, download=False)
-                if isinstance(preview_info, dict):
-                    expected_path = Path(ydl.prepare_filename(preview_info))
-                    with job.lock:
-                        job.title = preview_info.get("title", job.url)
-            except Exception:
-                pass
-
-            ydl.download([job.url])
-
-        if expected_path is not None:
-            media_path = resolve_media_path(expected_path, job.preset)
+        if job.preset == TRANSCRIPT_PRESET_NAME:
+            run_transcript_job(job)
         else:
-            media_path = find_recent_media_path(job.created_at, job.preset)
-        job.download_path = str(media_path)
-        job.artifact_dir = str(media_path.parent)
-
-        if job.generate_transcript and ENABLE_TRANSCRIPTION:
-            run_transcription_pipeline(job, media_path)
+            media_path = download_media(job, job.preset)
+            if job.generate_transcript and ENABLE_TRANSCRIPTION:
+                run_transcription_pipeline(job, media_path)
 
         with job.lock:
             job.done = True
-            job.status = (
-                "Done · transcript ready"
-                if job.generate_transcript and ENABLE_TRANSCRIPTION
-                else "Done"
-            )
+            job.status = "Done · transcript ready" if job.transcript_path else "Done"
             job.progress = 100
     except Exception as exc:
         with job.lock:
@@ -519,10 +836,15 @@ def worker(job_id: str) -> None:
 
 @app.route("/")
 def index():
+    cookies_configured = bool(COOKIES_PATH or COOKIES_FROM_BROWSER)
+    cookies_source = "cookiefile" if COOKIES_PATH else "browser" if COOKIES_FROM_BROWSER else None
     config = {
         "presets": list(FORMAT_PRESETS.keys()),
-        "defaultPreset": "Best Video (MP4)",
-        "audioPreset": "Best Audio (MP3)",
+        "defaultPreset": VIDEO_PRESET_NAME,
+        "audioPreset": AUDIO_PRESET_NAME,
+        "transcriptPreset": TRANSCRIPT_PRESET_NAME,
+        "cookiesConfigured": cookies_configured,
+        "cookiesSource": cookies_source,
         "transcriptionEnabled": ENABLE_TRANSCRIPTION,
         "transcriptionProvider": "openrouter",
         "transcriptionModel": OPENROUTER_TRANSCRIPTION_MODEL,
@@ -549,7 +871,9 @@ def start():
 
     if preset not in FORMAT_PRESETS:
         return jsonify({"error": "Invalid preset"}), 400
-    if generate_transcript and preset != "Best Audio (MP3)":
+    if preset == TRANSCRIPT_PRESET_NAME:
+        generate_transcript = True
+    elif generate_transcript and preset != AUDIO_PRESET_NAME:
         return jsonify({"error": "提取 Markdown 逐字稿前，请先选择 Best Audio (MP3)。"}), 400
 
     added = 0
@@ -580,6 +904,8 @@ def tasks():
                     "download_path": job.download_path,
                     "transcript_path": job.transcript_path,
                     "provider": job.provider,
+                    "preset": job.preset,
+                    "transcript_route": job.transcript_route,
                     "generate_transcript": job.generate_transcript,
                 }
             )

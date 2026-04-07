@@ -7,10 +7,17 @@ services:
       - ${HOME}/Downloads:/downloads
       # - ./cookies.txt:/cookies.txt:ro
     environment:
-      # - OPENROUTER_API_KEY=your_openrouter_key
-      # - ENABLE_TRANSCRIPTION=true
-      # - OPENROUTER_TRANSCRIPTION_MODEL=openai/gpt-audio-mini
-      # - ENABLE_AI_CLEANUP=true
-      # - AI_CLEANUP_BASE_URL=https://open.bigmodel.cn/api/coding/paas/v4
-      # - AI_CLEANUP_MODEL=GLM-4.5
-      # - COOKIES_PATH=/cookies.txt
+      HOST: 0.0.0.0
+      PORT: 8080
+      DOWNLOAD_DIR: /downloads
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      ENABLE_TRANSCRIPTION: ${ENABLE_TRANSCRIPTION:-true}
+      OPENROUTER_TRANSCRIPTION_MODEL: ${OPENROUTER_TRANSCRIPTION_MODEL:-openai/gpt-audio-mini}
+      ENABLE_AI_CLEANUP: ${ENABLE_AI_CLEANUP:-true}
+      AI_CLEANUP_BASE_URL: ${AI_CLEANUP_BASE_URL:-https://open.bigmodel.cn/api/coding/paas/v4}
+      AI_CLEANUP_API_KEY: ${AI_CLEANUP_API_KEY:-}
+      AI_CLEANUP_MODEL: ${AI_CLEANUP_MODEL:-GLM-4.5}
+      ENABLE_ARTICLE_DRAFT: ${ENABLE_ARTICLE_DRAFT:-true}
+      ARTICLE_DRAFT_API_KEY: ${ARTICLE_DRAFT_API_KEY:-}
+      ARTICLE_DRAFT_MODEL: ${ARTICLE_DRAFT_MODEL:-GLM-4.5}
+      COOKIES_PATH: ${DOCKER_COOKIES_PATH:-}

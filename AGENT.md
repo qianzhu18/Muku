@@ -5,7 +5,8 @@
 ## Primary Commands
 
 ```bash
-# 从 URL 直接生成 MP3 + Markdown 逐字稿
+# 从 URL 直接生成 Markdown 逐字稿
+# 默认先尝试直提字幕，失败后回退到 MP3 转写
 video-downloade capture "https://www.bilibili.com/video/BVxxxx" --json
 
 # 批量输入时，优先使用 stdin 或文件
@@ -31,6 +32,7 @@ video-downloade doctor --json
 - 默认输出可读文本摘要。
 - 加 `--json` 时，输出稳定 JSON，适合代理程序读取。
 - 也可以用 `--output paths` 只拿关键产物路径，便于 shell 链接下一步。
+- 如果平台字幕接口需要登录态，优先用 `--cookies-from-browser chrome` 或已配置的 `cookies.txt`。
 - 需要批量输入时，优先使用 `--input-file` 或 `--stdin`，避免拼接超长命令。
 - 需要可追踪结果时，优先加 `--result-file`.
 - `capture` 是 URL 转知识库产物的首选命令。

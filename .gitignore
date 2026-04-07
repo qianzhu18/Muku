@@ -1,4 +1,4 @@
-# 排除开发文档
+# 排除内部开发文档（公开文档请放到 docs/）
 doc/
 *.md.bak
 
@@ -19,3 +19,5 @@ downloads/
 
 # 排除敏感信息
 cookies.txt
+cookies/
+*.cookies.txt
