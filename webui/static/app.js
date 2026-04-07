@@ -134,9 +134,14 @@ function updateSubmitLabel() {
 function updateModeHint() {
   const preset = presetSelect.value;
   if (preset === config.transcriptPreset) {
-    const cookiesNote = config.cookiesConfigured
-      ? "已检测到 Cookies 配置，字幕直提命中率会更高。"
-      : "当前未检测到 Cookies，YouTube 和部分 B 站视频更可能直接回退到 MP3 转写。";
+    let cookiesNote = "当前未检测到 Cookies，YouTube 和部分 B 站视频更可能直接回退到 MP3 转写。";
+    if (config.youtubeAuthConfigured && config.bilibiliAuthConfigured) {
+      cookiesNote = "已检测到 YouTube / Bilibili 登录态配置，字幕直提命中率会更高。";
+    } else if (config.bilibiliAuthConfigured) {
+      cookiesNote = "当前只检测到 Bilibili 登录态。B 站更稳，但 YouTube 若报 bot 校验，仍需要单独配置 YouTube 登录态。";
+    } else if (config.youtubeAuthConfigured) {
+      cookiesNote = "当前已检测到 YouTube 登录态配置，YouTube 下载和字幕直提会更稳。";
+    }
     modeHint.textContent =
       `当前会先尝试直接提取平台字幕；如果没有可用字幕，再自动下载 MP3 并转写，最后生成逐字稿和解析稿。${cookiesNote}`;
     return;
@@ -149,13 +154,20 @@ function updateModeHint() {
 }
 
 function updateCookiesHint() {
-  if (!config.cookiesConfigured) {
+  if (!config.youtubeAuthConfigured && !config.bilibiliAuthConfigured) {
     cookiesHint.textContent =
-      "当前未检测到 Cookies 配置。建议在 .env 里配置 COOKIES_PATH 或 COOKIES_FROM_BROWSER，提升 YouTube / Bilibili 字幕直提成功率。";
+      "当前未检测到平台登录态。建议在 .env 里配置 YOUTUBE_COOKIES_FROM_BROWSER=chrome，或填写 YOUTUBE_COOKIES_PATH / BILIBILI_COOKIES_PATH。";
     return;
   }
-  const source = config.cookiesSource === "browser" ? "浏览器登录态" : "cookies.txt";
-  cookiesHint.textContent = `当前已检测到 ${source} 配置。勾选“启用 Cookies”后，会优先用登录态访问平台字幕接口。`;
+  if (config.youtubeAuthConfigured && config.bilibiliAuthConfigured) {
+    cookiesHint.textContent = "当前已检测到 YouTube 和 Bilibili 登录态配置。勾选“启用 Cookies”后，会按平台优先选择对应登录态。";
+    return;
+  }
+  if (config.youtubeAuthConfigured) {
+    cookiesHint.textContent = "当前已检测到 YouTube 登录态配置。勾选“启用 Cookies”后，会优先用 YouTube 登录态访问下载和字幕接口。";
+    return;
+  }
+  cookiesHint.textContent = "当前已检测到 Bilibili 登录态配置。勾选“启用 Cookies”后，会优先用 Bilibili 登录态访问平台字幕接口。";
 }
 
 function describePreset(preset, route) {

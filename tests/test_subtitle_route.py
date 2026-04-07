@@ -44,6 +44,33 @@ class SubtitleParsingTests(unittest.TestCase):
             ],
         )
 
+    def test_resolve_cookie_options_prefers_youtube_specific_browser_auth(self) -> None:
+        with mock.patch.object(web_app, "YOUTUBE_COOKIES_FROM_BROWSER", "chrome"), mock.patch.object(
+            web_app, "YOUTUBE_COOKIES_PATH", ""
+        ), mock.patch.object(web_app, "COOKIES_FROM_BROWSER", ""), mock.patch.object(
+            web_app, "COOKIES_PATH", "/tmp/bilibili.cookies.txt"
+        ):
+            options = web_app.resolve_cookie_options("https://www.youtube.com/watch?v=abcdefghijk")
+
+        self.assertEqual(options["cookiesfrombrowser"], ("chrome", None, None, None))
+        self.assertNotIn("cookiefile", options)
+
+    def test_humanize_ydlp_error_for_youtube_auth_failure(self) -> None:
+        job = web_app.Job(
+            job_id="job-youtube-error",
+            url="https://www.youtube.com/watch?v=abcdefghijk",
+            preset=web_app.AUDIO_PRESET_NAME,
+            use_cookies=True,
+            generate_transcript=False,
+        )
+
+        with mock.patch.object(web_app, "YOUTUBE_COOKIES_FROM_BROWSER", ""), mock.patch.object(
+            web_app, "YOUTUBE_COOKIES_PATH", ""
+        ), mock.patch.object(web_app, "COOKIES_FROM_BROWSER", ""), mock.patch.object(web_app, "COOKIES_PATH", ""):
+            message = web_app.humanize_ydlp_error(job, "ERROR: [youtube] abc: Sign in to confirm you're not a bot")
+
+        self.assertIn("YOUTUBE_COOKIES_FROM_BROWSER", message)
+
     def test_load_subtitle_text_parses_youtube_json3_and_dedupes_lines(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             subtitle_path = Path(temp_dir) / "captions.json3"

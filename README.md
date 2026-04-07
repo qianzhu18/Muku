@@ -92,7 +92,8 @@ python webui/app.py
 
 - `OPENROUTER_API_KEY`：音频转写必需
 - `AI_CLEANUP_API_KEY` / `ARTICLE_DRAFT_API_KEY`：清洗稿和解析稿必需
-- `COOKIES_PATH` 或 `COOKIES_FROM_BROWSER`：提升字幕直提成功率
+- `YOUTUBE_COOKIES_FROM_BROWSER` / `YOUTUBE_COOKIES_PATH`：提升 YouTube 下载和字幕直提成功率
+- `BILIBILI_COOKIES_PATH` / `BILIBILI_COOKIES_FROM_BROWSER`：提升 B 站字幕直提成功率
 
 开源协作约定：
 
@@ -219,7 +220,7 @@ video-downloade capture "https://www.youtube.com/watch?v=..." \
 也可以写进 `.env`：
 
 ```bash
-COOKIES_FROM_BROWSER=chrome
+YOUTUBE_COOKIES_FROM_BROWSER=chrome
 ```
 
 常见写法：
@@ -237,15 +238,39 @@ COOKIES_FROM_BROWSER=chrome
 - 安装浏览器扩展，例如 `Get cookies.txt LOCALLY`
 - 打开对应视频页面
 - 导出站点 cookies 为 `cookies.txt`
-- 在 `.env` 里配置 `COOKIES_PATH=/absolute/path/to/cookies.txt`
+- 在 `.env` 里配置：
+
+```bash
+YOUTUBE_COOKIES_PATH=/absolute/path/to/youtube.cookies.txt
+BILIBILI_COOKIES_PATH=/absolute/path/to/bilibili.cookies.txt
+```
 
 说明：
 
 - Web UI 里“启用 Cookies”只是表示“这次任务允许使用 Cookies”
-- 真正要想生效，还需要你提前配置好 `COOKIES_PATH` 或 `COOKIES_FROM_BROWSER`
+- 真正要想生效，还需要你提前配置好平台对应的登录态
+- 推荐把 YouTube 和 Bilibili 分开配置，避免一份 B 站 cookies 误用到 YouTube
 - 如果两者都没配，第三种模式仍然能工作，只是更容易直接回退到 MP3 转写
 - 开源仓库不要提交真实 Cookies；只在本地 `.env` 和本地 Cookies 文件里保存
 - Docker Compose 场景下，建议用 `DOCKER_COOKIES_PATH=/cookies.txt`，不要直接把宿主机的 `COOKIES_PATH` 复用进容器
+
+### 为什么 YouTube 现在更容易失败
+
+这不是你这套仓库单独的问题。`yt-dlp` 官方 FAQ 和 YouTube 相关说明里已经明确提到，YouTube 会对一部分请求触发额外校验，常见报错就是：
+
+- `Sign in to confirm you're not a bot`
+
+这类场景通常需要：
+
+- 浏览器登录态
+- 或重新导出的 YouTube cookies
+- 某些情况下还需要额外的 YouTube extractor 参数或 PO Token 流程
+
+官方参考：
+
+- [yt-dlp FAQ: Passing cookies to yt-dlp](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#passing-cookies-to-yt-dlp)
+- [yt-dlp FAQ: Extractors / Exporting YouTube cookies](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)
+- [yt-dlp Wiki: PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide)
 
 最小环境变量示例：
 

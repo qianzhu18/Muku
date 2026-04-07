@@ -96,6 +96,10 @@ APP_TITLE = "Downloader by Qianzhu"
 DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", str(Path.home() / "Downloads"))
 COOKIES_PATH = os.environ.get("COOKIES_PATH", "")
 COOKIES_FROM_BROWSER = os.environ.get("COOKIES_FROM_BROWSER", "").strip()
+YOUTUBE_COOKIES_PATH = os.environ.get("YOUTUBE_COOKIES_PATH", "").strip()
+YOUTUBE_COOKIES_FROM_BROWSER = os.environ.get("YOUTUBE_COOKIES_FROM_BROWSER", "").strip()
+BILIBILI_COOKIES_PATH = os.environ.get("BILIBILI_COOKIES_PATH", "").strip()
+BILIBILI_COOKIES_FROM_BROWSER = os.environ.get("BILIBILI_COOKIES_FROM_BROWSER", "").strip()
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "2"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8080"))
@@ -248,6 +252,83 @@ def parse_cookies_from_browser_spec(spec: str) -> tuple[str, str | None, str | N
     return (browser_name.lower(), profile, keyring.upper() if keyring else None, container)
 
 
+def platform_auth_configured(platform: str) -> bool:
+    if platform == "YouTube":
+        return bool(
+            YOUTUBE_COOKIES_FROM_BROWSER
+            or YOUTUBE_COOKIES_PATH
+            or COOKIES_FROM_BROWSER
+            or COOKIES_PATH
+        )
+    if platform == "Bilibili":
+        return bool(
+            BILIBILI_COOKIES_PATH
+            or BILIBILI_COOKIES_FROM_BROWSER
+            or COOKIES_PATH
+            or COOKIES_FROM_BROWSER
+        )
+    return bool(
+        COOKIES_PATH
+        or COOKIES_FROM_BROWSER
+        or YOUTUBE_COOKIES_PATH
+        or YOUTUBE_COOKIES_FROM_BROWSER
+        or BILIBILI_COOKIES_PATH
+        or BILIBILI_COOKIES_FROM_BROWSER
+    )
+
+
+def resolve_cookie_options(url: str) -> dict:
+    platform = detect_platform(url)
+
+    if platform == "YouTube":
+        if YOUTUBE_COOKIES_FROM_BROWSER:
+            return {"cookiesfrombrowser": parse_cookies_from_browser_spec(YOUTUBE_COOKIES_FROM_BROWSER)}
+        if YOUTUBE_COOKIES_PATH:
+            return {"cookiefile": YOUTUBE_COOKIES_PATH}
+        if COOKIES_FROM_BROWSER:
+            return {"cookiesfrombrowser": parse_cookies_from_browser_spec(COOKIES_FROM_BROWSER)}
+        if COOKIES_PATH:
+            return {"cookiefile": COOKIES_PATH}
+        return {}
+
+    if platform == "Bilibili":
+        if BILIBILI_COOKIES_PATH:
+            return {"cookiefile": BILIBILI_COOKIES_PATH}
+        if BILIBILI_COOKIES_FROM_BROWSER:
+            return {"cookiesfrombrowser": parse_cookies_from_browser_spec(BILIBILI_COOKIES_FROM_BROWSER)}
+        if COOKIES_PATH:
+            return {"cookiefile": COOKIES_PATH}
+        if COOKIES_FROM_BROWSER:
+            return {"cookiesfrombrowser": parse_cookies_from_browser_spec(COOKIES_FROM_BROWSER)}
+        return {}
+
+    if COOKIES_FROM_BROWSER:
+        return {"cookiesfrombrowser": parse_cookies_from_browser_spec(COOKIES_FROM_BROWSER)}
+    if COOKIES_PATH:
+        return {"cookiefile": COOKIES_PATH}
+    return {}
+
+
+def humanize_ydlp_error(job: Job, error_message: str) -> str:
+    platform = detect_platform(job.url)
+    normalized = (error_message or "").strip()
+
+    if platform == "YouTube" and "Sign in to confirm you're not a bot" in normalized:
+        if platform_auth_configured("YouTube"):
+            return (
+                "YouTube 当前拒绝了这次下载请求。通常是登录态失效、浏览器没有登录 YouTube，"
+                "或导出的 Cookies 已过期。建议重新登录 YouTube 后，优先在 .env 配置 "
+                "`YOUTUBE_COOKIES_FROM_BROWSER=chrome`，或者重新导出 YouTube 专用 cookies.txt。"
+            )
+        return (
+            "YouTube 现在经常会对 yt-dlp 请求做 bot 校验。当前没有检测到可用于 YouTube 的登录态，"
+            "请在 .env 里配置 `YOUTUBE_COOKIES_FROM_BROWSER=chrome`，或填写 "
+            "`YOUTUBE_COOKIES_PATH=/absolute/path/to/youtube.cookies.txt` 后重试。"
+        )
+
+    return normalized
+
+
 def build_ydl_options(job: Job, *, preset_name: str | None = None, base_dir: str | Path | None = None) -> dict:
     target_preset = preset_name or job.preset
     preset_conf = FORMAT_PRESETS[target_preset]
@@ -271,10 +352,8 @@ def build_ydl_options(job: Job, *, preset_name: str | None = None, base_dir: str
         options["merge_output_format"] = preset_conf["merge_output_format"]
     if "postprocessors" in preset_conf:
         options["postprocessors"] = preset_conf["postprocessors"]
-    if job.use_cookies and COOKIES_PATH:
-        options["cookiefile"] = COOKIES_PATH
-    elif job.use_cookies and COOKIES_FROM_BROWSER:
-        options["cookiesfrombrowser"] = parse_cookies_from_browser_spec(COOKIES_FROM_BROWSER)
+    if job.use_cookies:
+        options.update(resolve_cookie_options(job.url))
     return options
 
 
@@ -851,7 +930,8 @@ def run_job(job: Job) -> Job:
         with job.lock:
             job.done = True
             job.status = "Failed"
-            job.error = job.backend_error or str(exc)
+            raw_error = job.backend_error or str(exc)
+            job.error = humanize_ydlp_error(job, raw_error)
     return job
 
 
@@ -865,15 +945,15 @@ def worker(job_id: str) -> None:
 
 @app.route("/")
 def index():
-    cookies_configured = bool(COOKIES_PATH or COOKIES_FROM_BROWSER)
-    cookies_source = "cookiefile" if COOKIES_PATH else "browser" if COOKIES_FROM_BROWSER else None
+    cookies_configured = platform_auth_configured("Unknown")
     config = {
         "presets": list(FORMAT_PRESETS.keys()),
         "defaultPreset": VIDEO_PRESET_NAME,
         "audioPreset": AUDIO_PRESET_NAME,
         "transcriptPreset": TRANSCRIPT_PRESET_NAME,
         "cookiesConfigured": cookies_configured,
-        "cookiesSource": cookies_source,
+        "youtubeAuthConfigured": platform_auth_configured("YouTube"),
+        "bilibiliAuthConfigured": platform_auth_configured("Bilibili"),
         "transcriptionEnabled": ENABLE_TRANSCRIPTION,
         "transcriptionProvider": "openrouter",
         "transcriptionModel": OPENROUTER_TRANSCRIPTION_MODEL,

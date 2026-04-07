@@ -760,7 +760,7 @@ def audio_command(
 @click.option("--json", "as_json", is_flag=True, help="输出机器可读 JSON。")
 def doctor_command(as_json: bool) -> None:
     """检查依赖和云端接口配置状态。"""
-    subtitle_auth_configured = bool(web_app.COOKIES_PATH or web_app.COOKIES_FROM_BROWSER)
+    subtitle_auth_configured = web_app.platform_auth_configured("Unknown")
     report = {
         "download_dir": web_app.DOWNLOAD_DIR,
         "ffmpeg_bin": web_app.FFMPEG_BIN,
@@ -768,6 +768,8 @@ def doctor_command(as_json: bool) -> None:
         "yt_dlp_found": shutil.which("yt-dlp") is not None,
         "transcript_route_strategy": "subtitle_first_then_audio_fallback",
         "subtitle_auth_configured": subtitle_auth_configured,
+        "youtube_auth_configured": web_app.platform_auth_configured("YouTube"),
+        "bilibili_auth_configured": web_app.platform_auth_configured("Bilibili"),
         "transcription_enabled": web_app.ENABLE_TRANSCRIPTION,
         "transcription_model": web_app.OPENROUTER_TRANSCRIPTION_MODEL,
         "openrouter_key_configured": bool(web_app.transcribe_audio.__globals__.get("OPENROUTER_API_KEY")),
@@ -786,6 +788,12 @@ def doctor_command(as_json: bool) -> None:
         "cookies_path": web_app.COOKIES_PATH or None,
         "cookies_exists": bool(web_app.COOKIES_PATH) and Path(web_app.COOKIES_PATH).exists(),
         "cookies_from_browser": web_app.COOKIES_FROM_BROWSER or None,
+        "youtube_cookies_path": web_app.YOUTUBE_COOKIES_PATH or None,
+        "youtube_cookies_exists": bool(web_app.YOUTUBE_COOKIES_PATH) and Path(web_app.YOUTUBE_COOKIES_PATH).exists(),
+        "youtube_cookies_from_browser": web_app.YOUTUBE_COOKIES_FROM_BROWSER or None,
+        "bilibili_cookies_path": web_app.BILIBILI_COOKIES_PATH or None,
+        "bilibili_cookies_exists": bool(web_app.BILIBILI_COOKIES_PATH) and Path(web_app.BILIBILI_COOKIES_PATH).exists(),
+        "bilibili_cookies_from_browser": web_app.BILIBILI_COOKIES_FROM_BROWSER or None,
         "transcript_capture_ready": (
             shutil.which("yt-dlp") is not None
             and web_app.ENABLE_TRANSCRIPTION
