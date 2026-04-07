@@ -10,10 +10,20 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
 
+from env_config import load_env_file
+load_env_file()
+
+from openai_compatible_cleanup import (
+    AI_CLEANUP_BASE_URL,
+    AI_CLEANUP_ENABLED,
+    AI_CLEANUP_FALLBACK_LOCAL,
+    AI_CLEANUP_MODEL,
+    AI_CLEANUP_PROMPT_FILE,
+    AI_CLEANUP_PROVIDER_LABEL,
+    cleanup_transcript,
+)
 from openrouter_backends import (
-    OPENROUTER_CLEANUP_MODEL,
     OPENROUTER_TRANSCRIPTION_MODEL,
-    cleanup_markdown,
     transcribe_audio,
 )
 from transcript_pipeline import clean_transcript_text, render_markdown, write_sidecar_files
@@ -39,7 +49,6 @@ HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8080"))
 ENABLE_TRANSCRIPTION = env_bool("ENABLE_TRANSCRIPTION", True)
 TRANSCRIPTION_LANGUAGE = os.environ.get("TRANSCRIPTION_LANGUAGE", "auto")
-ENABLE_MARKDOWN_CLEANUP = env_bool("ENABLE_MARKDOWN_CLEANUP", False)
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")
 TRANSCRIPTION_AUDIO_BITRATE = os.environ.get("TRANSCRIPTION_AUDIO_BITRATE", "48k")
 KEEP_TRANSCRIPTION_INPUT = env_bool("KEEP_TRANSCRIPTION_INPUT", False)
@@ -214,6 +223,7 @@ def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
     cleanup_provider = None
     cleanup_model = None
     cleanup_response = None
+    cleanup_error = None
     transcript_response = None
     transcript_provider = "openrouter"
     transcript_model = OPENROUTER_TRANSCRIPTION_MODEL
@@ -245,24 +255,34 @@ def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
             set_job_state(job, status="Cleaning transcript...")
             clean_text = clean_transcript_text(raw_text) or raw_text
 
-        if markdown_path.exists():
-            markdown_text = markdown_path.read_text(encoding="utf-8").strip()
-        elif ENABLE_MARKDOWN_CLEANUP:
-            set_job_state(job, status=f"Formatting Markdown with {OPENROUTER_CLEANUP_MODEL}...")
-            cleanup_result = cleanup_markdown(clean_text, title=job.title, source_url=job.url)
-            markdown_text = cleanup_result["text"].strip()
-            cleanup_provider = cleanup_result["provider"]
-            cleanup_model = cleanup_result["model"]
-            cleanup_response = cleanup_result["raw_response"]
-        else:
-            markdown_text = render_markdown(
-                title=job.title,
-                source_url=job.url,
-                provider=transcript_provider,
-                model=transcript_model,
-                raw_text=raw_text,
-                clean_text=clean_text,
-            )
+        if AI_CLEANUP_ENABLED:
+            try:
+                set_job_state(job, status=f"Cleaning with {AI_CLEANUP_MODEL}...")
+                cleanup_result = cleanup_transcript(
+                    clean_text,
+                    title=job.title,
+                    source_url=job.url,
+                )
+                candidate_text = cleanup_result["text"].strip()
+                if candidate_text:
+                    clean_text = candidate_text
+                cleanup_provider = cleanup_result["provider"]
+                cleanup_model = cleanup_result["model"]
+                cleanup_response = cleanup_result["raw_response"]
+            except Exception as exc:
+                cleanup_error = str(exc)
+                if not AI_CLEANUP_FALLBACK_LOCAL:
+                    raise
+                set_job_state(job, status="AI cleanup unavailable. Falling back to local cleanup...")
+
+        markdown_text = render_markdown(
+            title=job.title,
+            source_url=job.url,
+            provider=transcript_provider,
+            model=transcript_model,
+            raw_text=raw_text,
+            clean_text=clean_text,
+        )
 
         artifact_paths = write_sidecar_files(
             audio_path=audio_path,
@@ -278,6 +298,9 @@ def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
                 "prepared_audio_path": str(prepared_audio),
                 "cleanup_provider": cleanup_provider,
                 "cleanup_model": cleanup_model,
+                "cleanup_base_url": AI_CLEANUP_BASE_URL,
+                "cleanup_prompt_file": AI_CLEANUP_PROMPT_FILE,
+                "cleanup_error": cleanup_error,
                 "transcription_response": transcript_response,
                 "cleanup_response": cleanup_response,
             },
@@ -357,8 +380,9 @@ def index():
         "transcriptionEnabled": ENABLE_TRANSCRIPTION,
         "transcriptionProvider": "openrouter",
         "transcriptionModel": OPENROUTER_TRANSCRIPTION_MODEL,
-        "markdownCleanupEnabled": ENABLE_MARKDOWN_CLEANUP,
-        "markdownCleanupModel": OPENROUTER_CLEANUP_MODEL,
+        "aiCleanupEnabled": AI_CLEANUP_ENABLED,
+        "aiCleanupProvider": AI_CLEANUP_PROVIDER_LABEL,
+        "aiCleanupModel": AI_CLEANUP_MODEL,
     }
     return render_template("index.html", app_title=APP_TITLE, config_json=json.dumps(config))
 

@@ -33,6 +33,7 @@ RUN set -e; \
     pip install --no-cache-dir -r requirements.txt -i "$PIP_URL"
 
 COPY webui/ /app/
+COPY 角色提示词.md /app/角色提示词.md
 
 ENV DOWNLOAD_DIR=/downloads
 EXPOSE 8080

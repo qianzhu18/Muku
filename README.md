@@ -78,11 +78,11 @@ python webui/app.py
 
 ## 云端转写路线
 
-当前推荐路线已经调整为“下载 MP3 -> OpenRouter 转写 -> 轻量清洗 -> Markdown”，不再以本地 `MLX / Whisper` 作为主线。
+当前推荐路线已经调整为“下载 MP3 -> OpenRouter 转写 -> GLM 清洗 -> Markdown”，不再以本地 `MLX / Whisper` 作为主线。
 
 - 主推转写后端：OpenRouter `openai/gpt-audio-mini`
-- 当前默认整理：本地轻量清洗 + Markdown sidecar
-- 可选 AI 整理：OpenRouter 文本模型
+- 当前清洗后端：智谱 OpenAI 兼容接口 `GLM-4.5`
+- 当前提示词文件：`角色提示词.md`
 
 完整执行文档见：[doc/cloud-transcription-plan.md](doc/cloud-transcription-plan.md)
 
@@ -99,8 +99,10 @@ python webui/app.py
 可选环境变量：
 
 ```bash
--e ENABLE_MARKDOWN_CLEANUP=false \
--e OPENROUTER_CLEANUP_MODEL=openai/gpt-4o-mini \
+-e ENABLE_AI_CLEANUP=true \
+-e AI_CLEANUP_BASE_URL=https://open.bigmodel.cn/api/coding/paas/v4 \
+-e AI_CLEANUP_MODEL=GLM-4.5 \
+-e AI_CLEANUP_PROMPT_FILE=/app/角色提示词.md \
 -e TRANSCRIPTION_LANGUAGE=auto
 ```
 

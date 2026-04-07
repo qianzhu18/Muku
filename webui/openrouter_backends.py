@@ -6,6 +6,10 @@ from pathlib import Path
 
 import requests
 
+from env_config import load_env_file
+
+load_env_file()
+
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_SITE_URL = os.environ.get("OPENROUTER_SITE_URL", "")
@@ -90,7 +94,8 @@ def transcribe_audio(audio_path: Path, title: str, source_url: str, language_hin
         "Transcribe this audio faithfully. "
         "Preserve the original language and wording. "
         "Do not summarize. "
-        "Return plain text only."
+        "Return plain text only. "
+        "Do not include metadata, titles, source URLs, labels, explanations, or markdown."
     )
     if language_hint and language_hint.lower() != "auto":
         prompt += f" The expected main language is {language_hint}."
@@ -104,11 +109,7 @@ def transcribe_audio(audio_path: Path, title: str, source_url: str, language_hin
                 "content": [
                     {
                         "type": "text",
-                        "text": (
-                            f"{prompt}\n\n"
-                            f"Title: {title}\n"
-                            f"Source URL: {source_url}"
-                        ),
+                        "text": prompt,
                     },
                     {
                         "type": "input_audio",

@@ -10,4 +10,7 @@ services:
       # - OPENROUTER_API_KEY=your_openrouter_key
       # - ENABLE_TRANSCRIPTION=true
       # - OPENROUTER_TRANSCRIPTION_MODEL=openai/gpt-audio-mini
+      # - ENABLE_AI_CLEANUP=true
+      # - AI_CLEANUP_BASE_URL=https://open.bigmodel.cn/api/coding/paas/v4
+      # - AI_CLEANUP_MODEL=GLM-4.5
       # - COOKIES_PATH=/cookies.txt

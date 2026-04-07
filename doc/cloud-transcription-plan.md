@@ -8,7 +8,7 @@
 
 1. `yt-dlp` 下载音频
 2. OpenRouter `openai/gpt-audio-mini` 转写 MP3
-3. 本地做轻量文本清洗
+3. 智谱 OpenAI 兼容接口 `GLM-4.5` 按提示词做文本清洗
 4. 输出 Markdown sidecar
 
 本方案不再以本地 `MLX / Whisper` 为主线能力。
@@ -28,8 +28,9 @@
 ### 主推方案
 
 - 转写：OpenRouter `openai/gpt-audio-mini`
-- 清洗：先本地规则清洗
-- Markdown 整理：先本地模板输出，后续再接 AI 模型
+- 清洗：智谱 OpenAI 兼容接口 `GLM-4.5`
+- 提示词：项目根目录 [角色提示词.md](../角色提示词.md)
+- Markdown 整理：本地模板输出
 
 这是当前最适合落第一版的路线，原因很直接：
 
@@ -37,11 +38,13 @@
 2. `openai/gpt-audio-mini` 的官方页面价格很低，适合先跑通大批量 MP3 转写。
 3. 转写和后续文本模型都可以放在同一个 OpenRouter 账号体系下，后面扩展最省事。
 
-### 备选方案
+### 当前清洗配置说明
 
-- 智谱 `glm-asr`
+- Base URL：`https://open.bigmodel.cn/api/coding/paas/v4`
+- Model：`GLM-4.5`
+- 协议：OpenAI 兼容 `chat/completions`
 
-智谱 `glm-asr` 作为备选是成立的，但如果当前目标是“先把下载后自动转写打通，而且更看重成本”，它不该再是默认主线。
+这一步是“转写后的文本清洗”，不是音频转写。
 
 ## 成本概念
 
@@ -85,7 +88,7 @@ OpenRouter 页面没有直接给“每分钟成本”。所以这里的分钟数
 - `10 元人民币` 约等于 `166 分钟`
 - 大约 `2.8 小时`
 
-所以如果只看当前公开价格口径，智谱确实显著贵于 `gpt-audio-mini` 这条路线。
+它更适合作为音频转写备选，不是当前默认主线。
 
 ## 为什么当前不把智谱放在第一位
 
@@ -128,12 +131,12 @@ OpenRouter 页面没有直接给“每分钟成本”。所以这里的分钟数
 
 ### 3. 清洗分层
 
-当前先只做两层：
+当前链路先做两层：
 
-- 本地规则清洗
-- 本地模板渲染 Markdown
+- 本地轻量规则清洗
+- 智谱 `GLM-4.5` 语义清洗
 
-后面再加 AI 整理时，再接 OpenRouter 文本模型，不要把第一版复杂度抬得太高。
+最后再统一渲染 Markdown。
 
 ### 4. 第一版不做的事情
 
@@ -155,8 +158,12 @@ TRANSCRIPTION_LANGUAGE=auto
 OPENROUTER_API_KEY=
 OPENROUTER_BASE_URL=https://openrouter.ai/api/v1
 OPENROUTER_TRANSCRIPTION_MODEL=openai/gpt-audio-mini
-ENABLE_MARKDOWN_CLEANUP=false
-OPENROUTER_CLEANUP_MODEL=openai/gpt-4o-mini
+ENABLE_AI_CLEANUP=true
+AI_CLEANUP_BASE_URL=https://open.bigmodel.cn/api/coding/paas/v4
+AI_CLEANUP_API_KEY=
+AI_CLEANUP_MODEL=GLM-4.5
+AI_CLEANUP_PROMPT_FILE=/app/角色提示词.md
+AI_CLEANUP_FALLBACK_LOCAL=true
 TRANSCRIPTION_AUDIO_BITRATE=48k
 KEEP_TRANSCRIPTION_INPUT=false
 ```
@@ -164,7 +171,7 @@ KEEP_TRANSCRIPTION_INPUT=false
 默认值建议：
 
 - 转写模型：`openai/gpt-audio-mini`
-- Markdown AI 整理：先关闭
+- 清洗模型：`GLM-4.5`
 
 ## 模型优先级
 
@@ -182,15 +189,15 @@ KEEP_TRANSCRIPTION_INPUT=false
    - 兼容备选
    - 理由：如果你后面希望部分任务改走智谱，保留适配层即可
 
-### Markdown 整理模型
+### 清洗模型
 
-1. 本地模板
-   - 第一版默认
-   - 理由：稳定、便宜、先把闭环打通
+1. `GLM-4.5`
+   - 当前默认
+   - 理由：和你给的 ASR 清洗提示词匹配，适合做“转写后修复”
 
-2. OpenRouter 便宜文本模型
-   - 第二步增强
-   - 理由：等逐字稿链路稳定后，再提升 Markdown 质量
+2. 本地规则清洗
+   - 回退路径
+   - 理由：缺少智谱 key 时也不阻塞网页验证
 
 ## 验收标准
 
@@ -201,6 +208,7 @@ KEEP_TRANSCRIPTION_INPUT=false
 - 前端任务状态能显示“下载中 / 转写中 / 完成 / 失败”
 - 出错时能在 `transcript.json` 和任务列表中看到错误
 - 不启用 AI 整理时，也能直接得到可用的 `.md`
+- 没配智谱 key 时，仍能自动回退到本地清洗，不影响转写验证
 
 ## 参考资料
 
