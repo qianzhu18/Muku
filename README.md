@@ -125,6 +125,17 @@ python -m webui.cli --help
 - `artifacts`：从任意一个产物路径反查整组 sidecar
 - `artifacts` 默认只返回 metadata 摘要；加 `--full-metadata` 才返回完整 `转写信息.json`
 
+## Skill 化建议
+
+值得，而且现在这个时机是对的。更稳的结构不是“让 skill 直接替代项目逻辑”，而是：
+
+- CLI 负责稳定执行
+- skill 负责给 AI 一个统一的调用协议
+
+仓库里已经补了可版本化的 skill：
+
+- [.codex/skills/video-downloade-cli/SKILL.md](/Users/mac/qianzhu%20Vault/Archives/Video-Downloade/.codex/skills/video-downloade-cli/SKILL.md)
+
 ## 使用说明
 
 1) 在输入框粘贴视频链接（支持多行）

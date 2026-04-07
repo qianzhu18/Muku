@@ -47,3 +47,9 @@ video-downloade doctor --json
 - `xxx - 解析稿.md`
 - `xxx - 逐字稿.md`
 - `xxx - 转写信息.json`
+
+## Skill
+
+如果代理支持读取仓库内 skill，优先加载：
+
+- [.codex/skills/video-downloade-cli/SKILL.md](/Users/mac/qianzhu%20Vault/Archives/Video-Downloade/.codex/skills/video-downloade-cli/SKILL.md)
