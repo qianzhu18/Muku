@@ -18,6 +18,11 @@ description: >
 # URL -> MP3 + 逐字稿 + 解析稿
 video-downloade capture "https://www.bilibili.com/video/BVxxxx" --json
 
+# YouTube with platform-specific auth
+video-downloade capture "https://www.youtube.com/watch?v=..." \
+  --youtube-cookies-from-browser chrome \
+  --json
+
 # 批量 URL
 video-downloade capture --input-file ./urls.txt --result-file ./capture.json --json
 cat ./urls.txt | video-downloade capture --stdin --output paths
@@ -55,6 +60,8 @@ video-downloade doctor --json
 ```bash
 video-downloade capture URL --language zh --json
 video-downloade capture URL --transcription-model openai/gpt-audio-mini --json
+video-downloade capture URL --youtube-cookies-path ./cookies/youtube.cookies.txt --json
+video-downloade capture URL --bilibili-cookies-path ./cookies/bilibili.cookies.txt --json
 video-downloade capture URL --cleanup-model GLM-4.5 --article-model GLM-4.5 --json
 video-downloade capture URL --no-article --json
 video-downloade audio FILE --cleanup-prompt-file ./角色提示词.md --article-prompt-file ./解析提示词.md --json
@@ -70,6 +77,6 @@ video-downloade audio FILE --cleanup-prompt-file ./角色提示词.md --article-
 ## Operational notes
 
 - 默认配置从仓库根目录 `.env` 读取，不要在命令里回显密钥
-- YouTube 或 B 站受限内容抓取失败时，优先尝试 `--cookies` 或 `--cookies-path`
+- YouTube 或 B 站受限内容抓取失败时，优先尝试平台级参数：`--youtube-cookies-*` / `--bilibili-cookies-*`
 - `artifacts` 默认只返回摘要 metadata；排障时再加 `--full-metadata`
 - 若仅需下载，不要额外开启逐字稿，以节省成本和时间

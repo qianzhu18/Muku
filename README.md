@@ -19,6 +19,7 @@
   - [公开文档入口](docs/README.md)
   - [Docker 部署规划](docs/docker-deployment.md)
   - [输入链接与多端拓展路线](docs/input-expansion-roadmap.md)
+  - [公开 skills 目录](skills/README.md)
 
 > 提示：当前更适合个人、本地或小范围自用，不建议直接作为公共下载站点大规模对外开放。
 
@@ -139,6 +140,11 @@ pip install -e .
 # 路由：先尝试直提平台字幕，失败再回退到 MP3 转写
 video-downloade capture "https://www.bilibili.com/video/BVxxxx" --json
 
+# YouTube：建议单独传 YouTube 登录态
+video-downloade capture "https://www.youtube.com/watch?v=..." \
+  --youtube-cookies-path ./cookies/youtube.cookies.txt \
+  --json
+
 # 批量 URL：从文件或 stdin 输入
 video-downloade capture --input-file ./urls.txt --output paths
 cat ./urls.txt | video-downloade capture --stdin --json
@@ -174,6 +180,8 @@ python -m webui.cli --help
 - `--output text|json|paths`：切换输出格式，方便人类或 AI 消费
 - `--result-file`：把结果 JSON 落盘，便于后续自动化
 - `--cookies-from-browser`：直接读取浏览器登录态，适合 YouTube / Bilibili 需要登录才能拿字幕的场景
+- `--youtube-cookies-path` / `--youtube-cookies-from-browser`：只覆盖 YouTube 登录态
+- `--bilibili-cookies-path` / `--bilibili-cookies-from-browser`：只覆盖 Bilibili 登录态
 - `--language`：覆盖本次转写语言提示
 - `--transcription-model` / `--cleanup-model` / `--article-model`：单次任务覆盖模型
 - `--cleanup/--no-cleanup`、`--article/--no-article`：控制成本和处理深度
@@ -301,6 +309,19 @@ TRANSCRIPTION_LANGUAGE=auto
 - 安卓 APK：优先做“分享到 App 后直接发起解析任务”的轻量壳层
 
 这些规划已经拆成独立文档，后面可以边做边迭代，不需要等全部功能完成后再整理。
+
+## AI / Skill 集成
+
+仓库里现在提供两套 skill 目录：
+
+- [skills/README.md](skills/README.md)：面向开源发布的公开 skill
+- [.codex/skills/video-downloade-cli/SKILL.md](.codex/skills/video-downloade-cli/SKILL.md)：当前 Codex 会直接使用的本地 skill
+
+如果后续你要让 Claude Code、Codex 或其他 agent 在联网后直接调用这个仓库，推荐流程是：
+
+1. 先跑 `video-downloade doctor --json`
+2. 再用 `capture` / `download` / `audio` / `artifacts`
+3. YouTube 和 Bilibili 分开配置 Cookies
 
 ## 目录结构
 

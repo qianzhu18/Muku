@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest import mock
 
 from webui import app as web_app
+from webui import cli as web_cli
 
 
 class SubtitleParsingTests(unittest.TestCase):
@@ -116,6 +117,26 @@ class SubtitleParsingTests(unittest.TestCase):
 
 
 class TranscriptRoutingTests(unittest.TestCase):
+    def test_runtime_overrides_patch_platform_cookie_paths(self) -> None:
+        original_youtube = web_app.YOUTUBE_COOKIES_PATH
+        original_bilibili = web_app.BILIBILI_COOKIES_PATH
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            youtube_path = Path(temp_dir) / "youtube.cookies.txt"
+            bilibili_path = Path(temp_dir) / "bilibili.cookies.txt"
+            youtube_path.write_text("youtube", encoding="utf-8")
+            bilibili_path.write_text("bilibili", encoding="utf-8")
+
+            with web_cli._runtime_overrides(
+                youtube_cookies_path=youtube_path,
+                bilibili_cookies_path=bilibili_path,
+            ):
+                self.assertEqual(web_app.YOUTUBE_COOKIES_PATH, str(youtube_path.resolve()))
+                self.assertEqual(web_app.BILIBILI_COOKIES_PATH, str(bilibili_path.resolve()))
+
+        self.assertEqual(web_app.YOUTUBE_COOKIES_PATH, original_youtube)
+        self.assertEqual(web_app.BILIBILI_COOKIES_PATH, original_bilibili)
+
     def test_start_accepts_share_text_payload(self) -> None:
         share_text = (
             "【SpaceX冲击史上最大IPO，马斯克想要的真的只是一家“公司”吗？】 "

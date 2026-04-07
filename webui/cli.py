@@ -172,6 +172,10 @@ def _runtime_overrides(
     output_dir: Path | None = None,
     cookies_path: Path | None = None,
     cookies_from_browser: str | object = _UNSET,
+    youtube_cookies_path: Path | None = None,
+    youtube_cookies_from_browser: str | object = _UNSET,
+    bilibili_cookies_path: Path | None = None,
+    bilibili_cookies_from_browser: str | object = _UNSET,
     transcription_model: str | object = _UNSET,
     cleanup_model: str | object = _UNSET,
     article_model: str | object = _UNSET,
@@ -199,6 +203,12 @@ def _runtime_overrides(
     if cookies_path is not None:
         patch(web_app, "COOKIES_PATH", str(cookies_path.expanduser().resolve()))
     patch(web_app, "COOKIES_FROM_BROWSER", cookies_from_browser)
+    if youtube_cookies_path is not None:
+        patch(web_app, "YOUTUBE_COOKIES_PATH", str(youtube_cookies_path.expanduser().resolve()))
+    patch(web_app, "YOUTUBE_COOKIES_FROM_BROWSER", youtube_cookies_from_browser)
+    if bilibili_cookies_path is not None:
+        patch(web_app, "BILIBILI_COOKIES_PATH", str(bilibili_cookies_path.expanduser().resolve()))
+    patch(web_app, "BILIBILI_COOKIES_FROM_BROWSER", bilibili_cookies_from_browser)
 
     patch(web_app, "TRANSCRIPTION_LANGUAGE", language)
     patch(web_app, "TRANSCRIPTION_AUDIO_BITRATE", bitrate)
@@ -417,6 +427,24 @@ def main() -> None:
     help="直接从浏览器读取 cookies，例如 chrome、edge:Profile 1、firefox::default。",
 )
 @click.option(
+    "--youtube-cookies-path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="显式指定 YouTube cookies.txt 路径。",
+)
+@click.option(
+    "--youtube-cookies-from-browser",
+    help="直接从浏览器读取 YouTube 登录态，例如 chrome、edge:Profile 1。",
+)
+@click.option(
+    "--bilibili-cookies-path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="显式指定 Bilibili cookies.txt 路径。",
+)
+@click.option(
+    "--bilibili-cookies-from-browser",
+    help="直接从浏览器读取 Bilibili 登录态，例如 chrome、edge:Profile 1。",
+)
+@click.option(
     "--output-dir",
     type=click.Path(path_type=Path, file_okay=False),
     help="下载和逐字稿输出目录。",
@@ -464,6 +492,10 @@ def capture_command(
     cookies: bool,
     cookies_path: Path | None,
     cookies_from_browser: str | None,
+    youtube_cookies_path: Path | None,
+    youtube_cookies_from_browser: str | None,
+    bilibili_cookies_path: Path | None,
+    bilibili_cookies_from_browser: str | None,
     output_dir: Path | None,
     output_mode: str,
     as_json: bool,
@@ -490,6 +522,10 @@ def capture_command(
         output_dir=output_dir,
         cookies_path=cookies_path,
         cookies_from_browser=cookies_from_browser if cookies_from_browser else _UNSET,
+        youtube_cookies_path=youtube_cookies_path,
+        youtube_cookies_from_browser=youtube_cookies_from_browser if youtube_cookies_from_browser else _UNSET,
+        bilibili_cookies_path=bilibili_cookies_path,
+        bilibili_cookies_from_browser=bilibili_cookies_from_browser if bilibili_cookies_from_browser else _UNSET,
         transcription_model=transcription_model if transcription_model else _UNSET,
         cleanup_model=cleanup_model if cleanup_model else _UNSET,
         article_model=article_model if article_model else _UNSET,
@@ -506,7 +542,15 @@ def capture_command(
         results = _run_download_jobs(
             urls=resolved_urls,
             preset=DEFAULT_TRANSCRIPT_PRESET,
-            use_cookies=cookies or cookies_path is not None or bool(cookies_from_browser),
+            use_cookies=(
+                cookies
+                or cookies_path is not None
+                or bool(cookies_from_browser)
+                or youtube_cookies_path is not None
+                or bool(youtube_cookies_from_browser)
+                or bilibili_cookies_path is not None
+                or bool(bilibili_cookies_from_browser)
+            ),
             generate_transcript=True,
         )
     _write_result_file(results, result_file)
@@ -547,6 +591,24 @@ def capture_command(
 @click.option(
     "--cookies-from-browser",
     help="直接从浏览器读取 cookies，例如 chrome、edge:Profile 1、firefox::default。",
+)
+@click.option(
+    "--youtube-cookies-path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="显式指定 YouTube cookies.txt 路径。",
+)
+@click.option(
+    "--youtube-cookies-from-browser",
+    help="直接从浏览器读取 YouTube 登录态，例如 chrome、edge:Profile 1。",
+)
+@click.option(
+    "--bilibili-cookies-path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="显式指定 Bilibili cookies.txt 路径。",
+)
+@click.option(
+    "--bilibili-cookies-from-browser",
+    help="直接从浏览器读取 Bilibili 登录态，例如 chrome、edge:Profile 1。",
 )
 @click.option(
     "--output-dir",
@@ -598,6 +660,10 @@ def download_command(
     cookies: bool,
     cookies_path: Path | None,
     cookies_from_browser: str | None,
+    youtube_cookies_path: Path | None,
+    youtube_cookies_from_browser: str | None,
+    bilibili_cookies_path: Path | None,
+    bilibili_cookies_from_browser: str | None,
     output_dir: Path | None,
     output_mode: str,
     as_json: bool,
@@ -627,6 +693,10 @@ def download_command(
         output_dir=output_dir,
         cookies_path=cookies_path,
         cookies_from_browser=cookies_from_browser if cookies_from_browser else _UNSET,
+        youtube_cookies_path=youtube_cookies_path,
+        youtube_cookies_from_browser=youtube_cookies_from_browser if youtube_cookies_from_browser else _UNSET,
+        bilibili_cookies_path=bilibili_cookies_path,
+        bilibili_cookies_from_browser=bilibili_cookies_from_browser if bilibili_cookies_from_browser else _UNSET,
         transcription_model=transcription_model if transcription_model else _UNSET,
         cleanup_model=cleanup_model if cleanup_model else _UNSET,
         article_model=article_model if article_model else _UNSET,
@@ -643,7 +713,15 @@ def download_command(
         results = _run_download_jobs(
             urls=resolved_urls,
             preset=preset,
-            use_cookies=cookies or cookies_path is not None or bool(cookies_from_browser),
+            use_cookies=(
+                cookies
+                or cookies_path is not None
+                or bool(cookies_from_browser)
+                or youtube_cookies_path is not None
+                or bool(youtube_cookies_from_browser)
+                or bilibili_cookies_path is not None
+                or bool(bilibili_cookies_from_browser)
+            ),
             generate_transcript=transcript,
         )
     _write_result_file(results, result_file)
