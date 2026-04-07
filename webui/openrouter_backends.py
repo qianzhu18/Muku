@@ -18,6 +18,7 @@ OPENROUTER_TRANSCRIPTION_MODEL = os.environ.get(
     "OPENROUTER_TRANSCRIPTION_MODEL", "openai/gpt-audio-mini"
 )
 OPENROUTER_CLEANUP_MODEL = os.environ.get("OPENROUTER_CLEANUP_MODEL", "openai/gpt-4o-mini")
+OPENROUTER_ARTICLE_MODEL = os.environ.get("OPENROUTER_ARTICLE_MODEL", "openai/gpt-4o-mini")
 OPENROUTER_TIMEOUT_SECONDS = int(os.environ.get("OPENROUTER_TIMEOUT_SECONDS", "600"))
 OPENROUTER_MAX_RETRIES = int(os.environ.get("OPENROUTER_MAX_RETRIES", "3"))
 
@@ -157,6 +158,43 @@ def cleanup_markdown(clean_text: str, title: str, source_url: str) -> dict:
     return {
         "provider": "openrouter",
         "model": OPENROUTER_CLEANUP_MODEL,
+        "text": _extract_text(data),
+        "raw_response": data,
+    }
+
+
+def generate_article_draft(
+    *,
+    transcript_text: str,
+    system_prompt: str,
+    title: str,
+    source_url: str,
+    platform: str,
+) -> dict:
+    payload = {
+        "model": OPENROUTER_ARTICLE_MODEL,
+        "temperature": 0.35,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {
+                "role": "user",
+                "content": (
+                    "请按 System Prompt 生成中文成稿。\n\n"
+                    "【元信息】\n"
+                    f"- 标题：{title}\n"
+                    f"- 平台：{platform}\n"
+                    f"- 原始链接：{source_url}\n\n"
+                    "【逐字稿全文】\n"
+                    f"{transcript_text}"
+                ),
+            },
+        ],
+    }
+
+    data = _post_chat(payload)
+    return {
+        "provider": "openrouter",
+        "model": OPENROUTER_ARTICLE_MODEL,
         "text": _extract_text(data),
         "raw_response": data,
     }

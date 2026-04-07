@@ -83,6 +83,11 @@ python webui/app.py
 - 主推转写后端：OpenRouter `openai/gpt-audio-mini`
 - 当前清洗后端：智谱 OpenAI 兼容接口 `GLM-4.5`
 - 当前提示词文件：`角色提示词.md`
+- 当前解析提示词：`解析提示词.md`
+
+说明：
+- 清洗稿和解析稿优先走智谱 OpenAI 兼容接口
+- 如果本地没有配置智谱 API Key，解析稿会自动回退到 OpenRouter 文本模型
 
 完整执行文档见：[doc/cloud-transcription-plan.md](doc/cloud-transcription-plan.md)
 
@@ -108,10 +113,11 @@ python webui/app.py
 
 勾选“下载后提取 MD 逐字稿”后，`Best Audio (MP3)` 任务会额外产出：
 
-- `xxx.raw.txt`
-- `xxx.clean.txt`
-- `xxx.md`
-- `xxx.transcript.json`
+- `xxx - 原始逐字稿.txt`
+- `xxx - 清洗逐字稿.txt`
+- `xxx - 解析稿.md`
+- `xxx - 逐字稿.md`
+- `xxx - 转写信息.json`
 
 ## Docker Hub 镜像
 

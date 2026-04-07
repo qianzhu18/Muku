@@ -9,7 +9,8 @@
 1. `yt-dlp` 下载音频
 2. OpenRouter `openai/gpt-audio-mini` 转写 MP3
 3. 智谱 OpenAI 兼容接口 `GLM-4.5` 按提示词做文本清洗
-4. 输出 Markdown sidecar
+4. 再生成一份“解析稿”
+5. 输出中文命名的 Markdown sidecar
 
 本方案不再以本地 `MLX / Whisper` 为主线能力。
 
@@ -29,8 +30,14 @@
 
 - 转写：OpenRouter `openai/gpt-audio-mini`
 - 清洗：智谱 OpenAI 兼容接口 `GLM-4.5`
-- 提示词：项目根目录 [角色提示词.md](../角色提示词.md)
-- Markdown 整理：本地模板输出
+- 清洗提示词：项目根目录 [角色提示词.md](../角色提示词.md)
+- 解析提示词：项目根目录 [解析提示词.md](../解析提示词.md)
+- Markdown 整理：将清洗稿、原始稿、解析稿合并到一份 Markdown
+
+如果智谱 API Key 未配置：
+
+- 清洗稿回退到本地规则清洗
+- 解析稿回退到 OpenRouter 文本模型
 
 这是当前最适合落第一版的路线，原因很直接：
 
@@ -117,17 +124,19 @@ OpenRouter 页面没有直接给“每分钟成本”。所以这里的分钟数
 建议每个音频默认产出：
 
 - `xxx.mp3`
-- `xxx.raw.txt`
-- `xxx.clean.txt`
-- `xxx.md`
-- `xxx.transcript.json`
+- `xxx - 原始逐字稿.txt`
+- `xxx - 清洗逐字稿.txt`
+- `xxx - 解析稿.md`
+- `xxx - 逐字稿.md`
+- `xxx - 转写信息.json`
 
 说明：
 
-- `raw.txt` 保留模型原始转写文本
-- `clean.txt` 是规则清洗后的文本
-- `md` 是可直接放进 Obsidian 的 Markdown
-- `transcript.json` 保留模型名、来源 URL 和 API 返回摘要，方便追错
+- `原始逐字稿.txt` 保留模型原始转写文本
+- `清洗逐字稿.txt` 是规则清洗后的文本
+- `解析稿.md` 是基于逐字稿生成的成稿版文章
+- `逐字稿.md` 是总览文件，包含清洗稿、原始稿、解析稿
+- `转写信息.json` 保留模型名、来源 URL 和 API 返回摘要，方便追错
 
 ### 3. 清洗分层
 

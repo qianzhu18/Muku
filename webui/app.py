@@ -20,13 +20,28 @@ from openai_compatible_cleanup import (
     AI_CLEANUP_MODEL,
     AI_CLEANUP_PROMPT_FILE,
     AI_CLEANUP_PROVIDER_LABEL,
+    ARTICLE_DRAFT_BASE_URL,
+    ARTICLE_DRAFT_MODEL,
+    ARTICLE_DRAFT_PROMPT_FILE,
+    ARTICLE_DRAFT_PROVIDER_LABEL,
+    ENABLE_ARTICLE_DRAFT,
     cleanup_transcript,
+    generate_article_draft as generate_ai_article_draft,
 )
 from openrouter_backends import (
+    OPENROUTER_ARTICLE_MODEL,
     OPENROUTER_TRANSCRIPTION_MODEL,
+    generate_article_draft as generate_openrouter_article_draft,
     transcribe_audio,
 )
-from transcript_pipeline import clean_transcript_text, render_markdown, write_sidecar_files
+from transcript_pipeline import (
+    build_artifact_paths,
+    clean_transcript_text,
+    detect_platform,
+    normalize_raw_transcript_text,
+    render_markdown,
+    write_sidecar_files,
+)
 
 try:
     import yt_dlp
@@ -261,12 +276,15 @@ def prepare_audio_for_transcription(audio_path: Path) -> Path:
 
 
 def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
-    raw_path = audio_path.with_suffix(".raw.txt")
-    clean_path = audio_path.with_suffix(".clean.txt")
-    markdown_path = audio_path.with_suffix(".md")
-    meta_path = audio_path.with_suffix(".transcript.json")
+    artifact_paths = build_artifact_paths(audio_path)
+    raw_path = artifact_paths["raw_path"]
+    clean_path = artifact_paths["clean_path"]
+    article_path = artifact_paths["article_path"]
+    markdown_path = artifact_paths["markdown_path"]
+    meta_path = artifact_paths["meta_path"]
 
-    if raw_path.exists() and clean_path.exists() and markdown_path.exists() and meta_path.exists():
+    article_ready = article_path.exists() or not ENABLE_ARTICLE_DRAFT
+    if raw_path.exists() and clean_path.exists() and markdown_path.exists() and meta_path.exists() and article_ready:
         job.artifact_dir = str(audio_path.parent)
         job.transcript_path = str(markdown_path)
         job.provider = "openrouter"
@@ -280,10 +298,16 @@ def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
     transcript_response = None
     transcript_provider = "openrouter"
     transcript_model = OPENROUTER_TRANSCRIPTION_MODEL
+    article_text = None
+    article_provider = None
+    article_model = None
+    article_response = None
+    article_error = None
+    platform = detect_platform(job.url)
 
     try:
         if raw_path.exists():
-            raw_text = raw_path.read_text(encoding="utf-8").strip()
+            raw_text = normalize_raw_transcript_text(raw_path.read_text(encoding="utf-8")).strip()
         else:
             set_job_state(job, status="Preparing audio for OpenRouter transcription...")
             prepared_audio = prepare_audio_for_transcription(audio_path)
@@ -295,7 +319,7 @@ def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
                 source_url=job.url,
                 language_hint=TRANSCRIPTION_LANGUAGE,
             )
-            raw_text = transcript_result["text"].strip()
+            raw_text = normalize_raw_transcript_text(transcript_result["text"]).strip()
             if not raw_text:
                 raise RuntimeError("OpenRouter returned an empty transcript.")
             transcript_provider = transcript_result["provider"]
@@ -303,7 +327,7 @@ def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
             transcript_response = transcript_result["raw_response"]
 
         if clean_path.exists():
-            clean_text = clean_path.read_text(encoding="utf-8").strip()
+            clean_text = clean_transcript_text(clean_path.read_text(encoding="utf-8")).strip()
         else:
             set_job_state(job, status="Cleaning transcript...")
             clean_text = clean_transcript_text(raw_text) or raw_text
@@ -316,7 +340,7 @@ def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
                     title=job.title,
                     source_url=job.url,
                 )
-                candidate_text = cleanup_result["text"].strip()
+                candidate_text = clean_transcript_text(cleanup_result["text"]).strip()
                 if candidate_text:
                     clean_text = candidate_text
                 cleanup_provider = cleanup_result["provider"]
@@ -328,13 +352,45 @@ def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
                     raise
                 set_job_state(job, status="AI cleanup unavailable. Falling back to local cleanup...")
 
+        if article_path.exists():
+            article_text = article_path.read_text(encoding="utf-8").strip()
+        elif ENABLE_ARTICLE_DRAFT:
+            try:
+                set_job_state(job, status=f"Generating article with {ARTICLE_DRAFT_MODEL}...")
+                article_result = generate_ai_article_draft(
+                    text=clean_text,
+                    title=job.title,
+                    source_url=job.url,
+                    platform=platform,
+                )
+                article_text = article_result["text"].strip()
+                article_provider = article_result["provider"]
+                article_model = article_result["model"]
+                article_response = article_result["raw_response"]
+            except Exception as exc:
+                article_error = str(exc)
+                set_job_state(job, status=f"GLM article unavailable. Falling back to {OPENROUTER_ARTICLE_MODEL}...")
+                try:
+                    system_prompt = Path(ARTICLE_DRAFT_PROMPT_FILE).read_text(encoding="utf-8").strip()
+                    article_result = generate_openrouter_article_draft(
+                        transcript_text=clean_text,
+                        system_prompt=system_prompt,
+                        title=job.title,
+                        source_url=job.url,
+                        platform=platform,
+                    )
+                    article_text = article_result["text"].strip()
+                    article_provider = article_result["provider"]
+                    article_model = article_result["model"]
+                    article_response = article_result["raw_response"]
+                except Exception as fallback_exc:
+                    article_error = f"{article_error} | OpenRouter fallback failed: {fallback_exc}"
+
         markdown_text = render_markdown(
             title=job.title,
-            source_url=job.url,
-            provider=transcript_provider,
-            model=transcript_model,
             raw_text=raw_text,
             clean_text=clean_text,
+            article_text=article_text,
         )
 
         artifact_paths = write_sidecar_files(
@@ -344,9 +400,11 @@ def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
             model=transcript_model,
             raw_text=raw_text,
             clean_text=clean_text,
+            article_text=article_text,
             markdown_text=markdown_text,
             extra_meta={
                 "title": job.title,
+                "platform": platform,
                 "artifact_dir": str(audio_path.parent),
                 "prepared_audio_path": str(prepared_audio),
                 "cleanup_provider": cleanup_provider,
@@ -354,8 +412,14 @@ def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
                 "cleanup_base_url": AI_CLEANUP_BASE_URL,
                 "cleanup_prompt_file": AI_CLEANUP_PROMPT_FILE,
                 "cleanup_error": cleanup_error,
+                "article_provider": article_provider,
+                "article_model": article_model,
+                "article_base_url": ARTICLE_DRAFT_BASE_URL,
+                "article_prompt_file": ARTICLE_DRAFT_PROMPT_FILE,
+                "article_error": article_error,
                 "transcription_response": transcript_response,
                 "cleanup_response": cleanup_response,
+                "article_response": article_response,
             },
         )
 
@@ -433,6 +497,9 @@ def index():
         "aiCleanupEnabled": AI_CLEANUP_ENABLED,
         "aiCleanupProvider": AI_CLEANUP_PROVIDER_LABEL,
         "aiCleanupModel": AI_CLEANUP_MODEL,
+        "articleDraftEnabled": ENABLE_ARTICLE_DRAFT,
+        "articleDraftProvider": ARTICLE_DRAFT_PROVIDER_LABEL,
+        "articleDraftModel": ARTICLE_DRAFT_MODEL,
     }
     return render_template("index.html", app_title=APP_TITLE, config_json=json.dumps(config))
 

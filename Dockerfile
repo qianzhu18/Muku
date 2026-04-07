@@ -34,6 +34,7 @@ RUN set -e; \
 
 COPY webui/ /app/
 COPY 角色提示词.md /app/角色提示词.md
+COPY 解析提示词.md /app/解析提示词.md
 
 ENV DOWNLOAD_DIR=/downloads
 EXPOSE 8080

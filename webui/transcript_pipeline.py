@@ -1,10 +1,17 @@
 import json
 import re
-from datetime import datetime, timezone
 from pathlib import Path
 
 
+TRANSCRIPT_METADATA_PATTERNS = [
+    re.compile(r"^\s*---\s*$"),
+    re.compile(r"^\s*(title|source_url|transcription_provider|transcription_model|generated_at)\s*:\s*.+$", re.IGNORECASE),
+    re.compile(r"^\s*-\s*(来源|转写)\s*[:：].+$"),
+]
+
+
 def clean_transcript_text(text: str) -> str:
+    text = strip_transcript_metadata(text)
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = text.replace("\u200b", "").replace("\ufeff", "")
     text = re.sub(r"[ \t]+", " ", text)
@@ -25,46 +32,86 @@ def clean_transcript_text(text: str) -> str:
     return _paragraphize(merged)
 
 
+def normalize_raw_transcript_text(text: str) -> str:
+    text = strip_transcript_metadata(text)
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    text = text.replace("\u200b", "").replace("\ufeff", "")
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()
+
+
+def strip_transcript_metadata(text: str) -> str:
+    text = text.strip()
+    if not text:
+        return ""
+
+    lines = text.replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    cleaned_lines: list[str] = []
+    for line in lines:
+        stripped = line.strip()
+        if any(pattern.match(stripped) for pattern in TRANSCRIPT_METADATA_PATTERNS):
+            continue
+        cleaned_lines.append(line)
+
+    cleaned = "\n".join(cleaned_lines).strip()
+    cleaned = re.sub(r"^(来源|转写)\s*[:：].+$", "", cleaned, flags=re.MULTILINE)
+    return cleaned.strip()
+
+
+def detect_platform(url: str) -> str:
+    lowered = url.lower()
+    if "bilibili.com" in lowered or "b23.tv" in lowered:
+        return "Bilibili"
+    if "youtube.com" in lowered or "youtu.be" in lowered:
+        return "YouTube"
+    if "x.com" in lowered or "twitter.com" in lowered:
+        return "X"
+    return "Unknown"
+
+
+def build_artifact_paths(audio_path: Path) -> dict[str, Path]:
+    stem = audio_path.stem
+    return {
+        "raw_path": audio_path.with_name(f"{stem} - 原始逐字稿.txt"),
+        "clean_path": audio_path.with_name(f"{stem} - 清洗逐字稿.txt"),
+        "article_path": audio_path.with_name(f"{stem} - 解析稿.md"),
+        "markdown_path": audio_path.with_name(f"{stem} - 逐字稿.md"),
+        "meta_path": audio_path.with_name(f"{stem} - 转写信息.json"),
+    }
+
+
 def render_markdown(
     *,
     title: str,
-    source_url: str,
-    provider: str,
-    model: str,
-    raw_text: str,
     clean_text: str,
+    raw_text: str,
+    article_text: str | None,
 ) -> str:
-    frontmatter = {
-        "title": title,
-        "source_url": source_url,
-        "transcription_provider": provider,
-        "transcription_model": model,
-        "generated_at": datetime.now(timezone.utc).isoformat(),
-    }
+    sections = [
+        f"# {title}",
+        "",
+        "## 清洗稿",
+        "",
+        clean_text.strip(),
+        "",
+        "## 原始稿",
+        "",
+        raw_text.strip(),
+        "",
+    ]
 
-    lines = ["---"]
-    for key, value in frontmatter.items():
-        lines.append(f"{key}: {json.dumps(value, ensure_ascii=False)}")
-    lines.extend(
-        [
-            "---",
-            "",
-            f"# {title}",
-            "",
-            f"- 来源：{source_url}",
-            f"- 转写：`{provider}` / `{model}`",
-            "",
-            "## 清洗稿",
-            "",
-            clean_text.strip(),
-            "",
-            "## 原始逐字稿",
-            "",
-            raw_text.strip(),
-            "",
-        ]
-    )
-    return "\n".join(lines)
+    if article_text and article_text.strip():
+        sections.extend(
+            [
+                "## 解析稿",
+                "",
+                article_text.strip(),
+                "",
+            ]
+        )
+
+    return "\n".join(sections).strip() + "\n"
 
 
 def write_sidecar_files(
@@ -75,18 +122,20 @@ def write_sidecar_files(
     model: str,
     raw_text: str,
     clean_text: str,
+    article_text: str | None,
     markdown_text: str,
     extra_meta: dict,
 ) -> dict[str, Path]:
-    raw_path = audio_path.with_suffix(".raw.txt")
-    clean_path = audio_path.with_suffix(".clean.txt")
-    markdown_path = audio_path.with_suffix(".md")
-    meta_path = audio_path.with_suffix(".transcript.json")
+    paths = build_artifact_paths(audio_path)
 
-    raw_path.write_text(raw_text.strip() + "\n", encoding="utf-8")
-    clean_path.write_text(clean_text.strip() + "\n", encoding="utf-8")
-    markdown_path.write_text(markdown_text.strip() + "\n", encoding="utf-8")
-    meta_path.write_text(
+    paths["raw_path"].write_text(raw_text.strip() + "\n", encoding="utf-8")
+    paths["clean_path"].write_text(clean_text.strip() + "\n", encoding="utf-8")
+    if article_text and article_text.strip():
+        paths["article_path"].write_text(article_text.strip() + "\n", encoding="utf-8")
+    elif paths["article_path"].exists():
+        paths["article_path"].unlink()
+    paths["markdown_path"].write_text(markdown_text.strip() + "\n", encoding="utf-8")
+    paths["meta_path"].write_text(
         json.dumps(
             {
                 "audio_path": str(audio_path),
@@ -102,12 +151,7 @@ def write_sidecar_files(
         encoding="utf-8",
     )
 
-    return {
-        "raw_path": raw_path,
-        "clean_path": clean_path,
-        "markdown_path": markdown_path,
-        "meta_path": meta_path,
-    }
+    return paths
 
 
 def _paragraphize(text: str, max_chars: int = 220) -> str:
