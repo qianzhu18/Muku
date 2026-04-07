@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "video-downloade"
+version = "0.1.0"
+description = "Download videos or audio and turn them into Markdown transcript assets."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "Flask>=3.0,<4",
+  "requests>=2.32,<3",
+  "yt-dlp>=2024.10.0",
+  "click>=8.1,<9",
+]
+
+[project.scripts]
+video-downloade = "webui.cli:main"
+
+[tool.setuptools]
+packages = ["webui"]
+
+[tool.setuptools.package-data]
+webui = [
+  "static/*.css",
+  "static/*.js",
+  "templates/*.html",
+  "prompts/*.md",
+]

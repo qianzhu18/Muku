@@ -6,7 +6,10 @@ doc/
 __pycache__/
 *.pyc
 venv/
+.venv*/
 .env
+*.egg-info/
+.DS_Store
 
 # 排除下载产生的临时文件
 downloads/

@@ -5,9 +5,24 @@ from pathlib import Path
 
 import requests
 
-from env_config import load_env_file
+try:
+    from .env_config import load_env_file
+except ImportError:
+    from env_config import load_env_file
 
 load_env_file()
+
+
+def _default_prompt_path(filename: str) -> str:
+    package_root = Path(__file__).resolve().parent
+    candidates = [
+        package_root.parent / filename,
+        package_root / "prompts" / filename,
+    ]
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+    return str(candidates[-1])
 
 AI_CLEANUP_ENABLED = os.environ.get("ENABLE_AI_CLEANUP", "true").strip().lower() in {
     "1",
@@ -26,7 +41,7 @@ AI_CLEANUP_MODEL = os.environ.get("AI_CLEANUP_MODEL", "GLM-4.5").strip()
 AI_CLEANUP_PROVIDER_LABEL = os.environ.get("AI_CLEANUP_PROVIDER_LABEL", "zhipu-coding").strip()
 AI_CLEANUP_PROMPT_FILE = os.environ.get(
     "AI_CLEANUP_PROMPT_FILE",
-    str(Path(__file__).resolve().parents[1] / "角色提示词.md"),
+    _default_prompt_path("角色提示词.md"),
 ).strip()
 
 ENABLE_ARTICLE_DRAFT = os.environ.get("ENABLE_ARTICLE_DRAFT", "true").strip().lower() in {
@@ -43,7 +58,7 @@ ARTICLE_DRAFT_PROVIDER_LABEL = os.environ.get(
 ).strip()
 ARTICLE_DRAFT_PROMPT_FILE = os.environ.get(
     "ARTICLE_DRAFT_PROMPT_FILE",
-    str(Path(__file__).resolve().parents[1] / "解析提示词.md"),
+    _default_prompt_path("解析提示词.md"),
 ).strip()
 
 AI_TEXT_TIMEOUT_SECONDS = int(os.environ.get("AI_TEXT_TIMEOUT_SECONDS", "300"))

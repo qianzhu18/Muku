@@ -10,38 +10,69 @@ from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
 
-from env_config import load_env_file
+try:
+    from .env_config import load_env_file
+    from .openai_compatible_cleanup import (
+        AI_CLEANUP_BASE_URL,
+        AI_CLEANUP_ENABLED,
+        AI_CLEANUP_FALLBACK_LOCAL,
+        AI_CLEANUP_MODEL,
+        AI_CLEANUP_PROMPT_FILE,
+        AI_CLEANUP_PROVIDER_LABEL,
+        ARTICLE_DRAFT_BASE_URL,
+        ARTICLE_DRAFT_MODEL,
+        ARTICLE_DRAFT_PROMPT_FILE,
+        ARTICLE_DRAFT_PROVIDER_LABEL,
+        ENABLE_ARTICLE_DRAFT,
+        cleanup_transcript,
+        generate_article_draft as generate_ai_article_draft,
+    )
+    from .openrouter_backends import (
+        OPENROUTER_ARTICLE_MODEL,
+        OPENROUTER_TRANSCRIPTION_MODEL,
+        generate_article_draft as generate_openrouter_article_draft,
+        transcribe_audio,
+    )
+    from .transcript_pipeline import (
+        build_artifact_paths,
+        clean_transcript_text,
+        detect_platform,
+        normalize_raw_transcript_text,
+        render_markdown,
+        write_sidecar_files,
+    )
+except ImportError:
+    from env_config import load_env_file
+    from openai_compatible_cleanup import (
+        AI_CLEANUP_BASE_URL,
+        AI_CLEANUP_ENABLED,
+        AI_CLEANUP_FALLBACK_LOCAL,
+        AI_CLEANUP_MODEL,
+        AI_CLEANUP_PROMPT_FILE,
+        AI_CLEANUP_PROVIDER_LABEL,
+        ARTICLE_DRAFT_BASE_URL,
+        ARTICLE_DRAFT_MODEL,
+        ARTICLE_DRAFT_PROMPT_FILE,
+        ARTICLE_DRAFT_PROVIDER_LABEL,
+        ENABLE_ARTICLE_DRAFT,
+        cleanup_transcript,
+        generate_article_draft as generate_ai_article_draft,
+    )
+    from openrouter_backends import (
+        OPENROUTER_ARTICLE_MODEL,
+        OPENROUTER_TRANSCRIPTION_MODEL,
+        generate_article_draft as generate_openrouter_article_draft,
+        transcribe_audio,
+    )
+    from transcript_pipeline import (
+        build_artifact_paths,
+        clean_transcript_text,
+        detect_platform,
+        normalize_raw_transcript_text,
+        render_markdown,
+        write_sidecar_files,
+    )
 load_env_file()
-
-from openai_compatible_cleanup import (
-    AI_CLEANUP_BASE_URL,
-    AI_CLEANUP_ENABLED,
-    AI_CLEANUP_FALLBACK_LOCAL,
-    AI_CLEANUP_MODEL,
-    AI_CLEANUP_PROMPT_FILE,
-    AI_CLEANUP_PROVIDER_LABEL,
-    ARTICLE_DRAFT_BASE_URL,
-    ARTICLE_DRAFT_MODEL,
-    ARTICLE_DRAFT_PROMPT_FILE,
-    ARTICLE_DRAFT_PROVIDER_LABEL,
-    ENABLE_ARTICLE_DRAFT,
-    cleanup_transcript,
-    generate_article_draft as generate_ai_article_draft,
-)
-from openrouter_backends import (
-    OPENROUTER_ARTICLE_MODEL,
-    OPENROUTER_TRANSCRIPTION_MODEL,
-    generate_article_draft as generate_openrouter_article_draft,
-    transcribe_audio,
-)
-from transcript_pipeline import (
-    build_artifact_paths,
-    clean_transcript_text,
-    detect_platform,
-    normalize_raw_transcript_text,
-    render_markdown,
-    write_sidecar_files,
-)
 
 try:
     import yt_dlp
@@ -278,13 +309,12 @@ def prepare_audio_for_transcription(audio_path: Path) -> Path:
 def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
     artifact_paths = build_artifact_paths(audio_path)
     raw_path = artifact_paths["raw_path"]
-    clean_path = artifact_paths["clean_path"]
     article_path = artifact_paths["article_path"]
     markdown_path = artifact_paths["markdown_path"]
     meta_path = artifact_paths["meta_path"]
 
     article_ready = article_path.exists() or not ENABLE_ARTICLE_DRAFT
-    if raw_path.exists() and clean_path.exists() and markdown_path.exists() and meta_path.exists() and article_ready:
+    if raw_path.exists() and markdown_path.exists() and meta_path.exists() and article_ready:
         job.artifact_dir = str(audio_path.parent)
         job.transcript_path = str(markdown_path)
         job.provider = "openrouter"
@@ -326,11 +356,8 @@ def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
             transcript_model = transcript_result["model"]
             transcript_response = transcript_result["raw_response"]
 
-        if clean_path.exists():
-            clean_text = clean_transcript_text(clean_path.read_text(encoding="utf-8")).strip()
-        else:
-            set_job_state(job, status="Cleaning transcript...")
-            clean_text = clean_transcript_text(raw_text) or raw_text
+        set_job_state(job, status="Cleaning transcript...")
+        clean_text = clean_transcript_text(raw_text) or raw_text
 
         if AI_CLEANUP_ENABLED:
             try:
@@ -435,11 +462,7 @@ def run_transcription_pipeline(job: Job, audio_path: Path) -> None:
             prepared_audio.unlink(missing_ok=True)
 
 
-def worker(job_id: str) -> None:
-    job = jobs.get(job_id)
-    if not job:
-        return
-
+def run_job(job: Job) -> Job:
     try:
         set_job_state(job, status="Starting...")
         Path(DOWNLOAD_DIR).mkdir(parents=True, exist_ok=True)
@@ -483,6 +506,15 @@ def worker(job_id: str) -> None:
             job.done = True
             job.status = "Failed"
             job.error = job.backend_error or str(exc)
+    return job
+
+
+def worker(job_id: str) -> None:
+    job = jobs.get(job_id)
+    if not job:
+        return
+
+    run_job(job)
 
 
 @app.route("/")

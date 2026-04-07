@@ -6,7 +6,10 @@ from pathlib import Path
 
 import requests
 
-from env_config import load_env_file
+try:
+    from .env_config import load_env_file
+except ImportError:
+    from env_config import load_env_file
 
 load_env_file()
 

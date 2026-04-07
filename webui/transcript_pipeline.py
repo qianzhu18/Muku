@@ -74,7 +74,6 @@ def build_artifact_paths(audio_path: Path) -> dict[str, Path]:
     stem = audio_path.stem
     return {
         "raw_path": audio_path.with_name(f"{stem} - 原始逐字稿.txt"),
-        "clean_path": audio_path.with_name(f"{stem} - 清洗逐字稿.txt"),
         "article_path": audio_path.with_name(f"{stem} - 解析稿.md"),
         "markdown_path": audio_path.with_name(f"{stem} - 逐字稿.md"),
         "meta_path": audio_path.with_name(f"{stem} - 转写信息.json"),
@@ -127,9 +126,11 @@ def write_sidecar_files(
     extra_meta: dict,
 ) -> dict[str, Path]:
     paths = build_artifact_paths(audio_path)
+    legacy_clean_path = audio_path.with_name(f"{audio_path.stem} - 清洗逐字稿.txt")
 
     paths["raw_path"].write_text(raw_text.strip() + "\n", encoding="utf-8")
-    paths["clean_path"].write_text(clean_text.strip() + "\n", encoding="utf-8")
+    if legacy_clean_path.exists():
+        legacy_clean_path.unlink()
     if article_text and article_text.strip():
         paths["article_path"].write_text(article_text.strip() + "\n", encoding="utf-8")
     elif paths["article_path"].exists():

@@ -69,6 +69,43 @@ python webui/app.py
 
 访问：`http://localhost:8080`
 
+## CLI 用法
+
+这个项目现在也可以直接当命令行工具使用，适合让 AI 或脚本直接调用，不必经过网页表单。
+
+安装开发模式命令：
+
+```bash
+pip install -e .
+```
+
+安装后可用命令：
+
+```bash
+# 从 URL 直接生成 MP3 + Markdown 逐字稿
+video-downloade capture "https://www.bilibili.com/video/BVxxxx" --json
+
+# 仅下载，不生成逐字稿
+video-downloade download "https://www.bilibili.com/video/BVxxxx" \
+  --preset "Best Audio (MP3)" \
+  --json
+
+# 处理本地音频
+video-downloade audio "/path/to/file.mp3" --source-url "https://example.com" --json
+
+# 检查环境与配置
+video-downloade doctor --json
+
+# 启动现有 Web UI
+video-downloade serve --port 8080
+```
+
+如果你暂时不想安装 console script，也可以直接运行：
+
+```bash
+python -m webui.cli --help
+```
+
 ## 使用说明
 
 1) 在输入框粘贴视频链接（支持多行）
@@ -114,7 +151,6 @@ python webui/app.py
 勾选“下载后提取 MD 逐字稿”后，`Best Audio (MP3)` 任务会额外产出：
 
 - `xxx - 原始逐字稿.txt`
-- `xxx - 清洗逐字稿.txt`
 - `xxx - 解析稿.md`
 - `xxx - 逐字稿.md`
 - `xxx - 转写信息.json`
@@ -130,6 +166,8 @@ python webui/app.py
 
 ```
 webui/               Web UI 主程序
+AGENT.md             给 AI 代理看的命令行使用说明
+pyproject.toml       CLI 安装入口与打包配置
 scripts/             本地快捷脚本（可选）
 Dockerfile           Docker 构建文件
 requirements.txt     Python 依赖
