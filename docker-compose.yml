@@ -7,4 +7,7 @@ services:
       - ${HOME}/Downloads:/downloads
       # - ./cookies.txt:/cookies.txt:ro
     environment:
+      # - OPENROUTER_API_KEY=your_openrouter_key
+      # - ENABLE_TRANSCRIPTION=true
+      # - OPENROUTER_TRANSCRIPTION_MODEL=openai/gpt-audio-mini
       # - COOKIES_PATH=/cookies.txt

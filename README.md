@@ -78,13 +78,38 @@ python webui/app.py
 
 ## 云端转写路线
 
-当前推荐路线已经调整为“下载 MP3 -> 云端转写 -> 轻量清洗”，不再以本地 `MLX / Whisper` 作为主线。
+当前推荐路线已经调整为“下载 MP3 -> OpenRouter 转写 -> 轻量清洗 -> Markdown”，不再以本地 `MLX / Whisper` 作为主线。
 
-- 主推转写后端：智谱 `glm-asr`
-- 主推清洗后端：智谱 `glm-4.7-flash` 或 `glm-4.7`
-- 兼容转写后端：OpenRouter `openai/gpt-audio-mini`
+- 主推转写后端：OpenRouter `openai/gpt-audio-mini`
+- 当前默认整理：本地轻量清洗 + Markdown sidecar
+- 可选 AI 整理：OpenRouter 文本模型
 
 完整执行文档见：[doc/cloud-transcription-plan.md](doc/cloud-transcription-plan.md)
+
+### OpenRouter 配置
+
+最小环境变量：
+
+```bash
+-e OPENROUTER_API_KEY=your_key \
+-e ENABLE_TRANSCRIPTION=true \
+-e OPENROUTER_TRANSCRIPTION_MODEL=openai/gpt-audio-mini
+```
+
+可选环境变量：
+
+```bash
+-e ENABLE_MARKDOWN_CLEANUP=false \
+-e OPENROUTER_CLEANUP_MODEL=openai/gpt-4o-mini \
+-e TRANSCRIPTION_LANGUAGE=auto
+```
+
+`Best Audio (MP3)` 预设下载完成后会自动产出：
+
+- `xxx.raw.txt`
+- `xxx.clean.txt`
+- `xxx.md`
+- `xxx.transcript.json`
 
 ## Docker Hub 镜像
 

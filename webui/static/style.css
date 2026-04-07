@@ -224,6 +224,15 @@ textarea:focus {
   margin-top: 2px;
 }
 
+.task-path {
+  font-size: 0.76rem;
+  color: var(--text-light);
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .progress-track {
   width: 100px;
   height: 4px;

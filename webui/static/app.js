@@ -12,6 +12,8 @@ const queueCount = document.getElementById("queue-count");
     presetSelect.appendChild(opt);
   });
   presetSelect.value = config.defaultPreset;
+  updateSubmitLabel();
+  presetSelect.addEventListener("change", updateSubmitLabel);
   setInterval(poll, 1500);
   poll();
 })();
@@ -37,7 +39,7 @@ form.addEventListener("submit", async (event) => {
     alert("提交失败: " + err);
   } finally {
     startBtn.disabled = false;
-    startBtn.textContent = "开始下载";
+    updateSubmitLabel();
   }
 });
 
@@ -55,20 +57,32 @@ async function poll() {
 }
 
 function render(tasks) {
-  if (!tasks.length) return;
+  if (!tasks.length) {
+    taskList.innerHTML = `
+      <li style="padding: 20px; text-align: center; color: var(--text-light); font-size: 0.9rem;">
+        暂无下载任务，去添加一个吧 🍃
+      </li>`;
+    return;
+  }
   taskList.innerHTML = tasks
     .map((task) => {
       let color = "var(--text-sub)";
-      if (task.status === "Done") color = "var(--accent)";
+      if (task.status === "Done" || task.status === "Done · transcript ready") color = "var(--accent)";
       if (task.error) color = "#d32f2f";
+      const outputHint = task.transcript_path
+        ? `<div class="task-path">逐字稿: ${escapeHtml(task.transcript_path)}</div>`
+        : task.download_path
+          ? `<div class="task-path">文件: ${escapeHtml(task.download_path)}</div>`
+          : "";
 
       return `
         <li class="task-item">
             <div class="task-info">
-                <div class="task-title" title="${task.title}">${task.title}</div>
+                <div class="task-title" title="${escapeHtml(task.title)}">${escapeHtml(task.title)}</div>
                 <div class="task-status" style="color: ${color}">
-                    ${task.error ? task.error : task.status}
+                    ${escapeHtml(task.error ? task.error : task.status)}
                 </div>
+                ${outputHint}
             </div>
             ${
               !task.done && !task.error
@@ -81,4 +95,22 @@ function render(tasks) {
         </li>`;
     })
     .join("");
+}
+
+function updateSubmitLabel() {
+  const preset = presetSelect.value;
+  const isAudioPreset = preset === "Best Audio (MP3)";
+  if (isAudioPreset && config.transcriptionEnabled) {
+    startBtn.textContent = "开始下载并转写";
+    return;
+  }
+  startBtn.textContent = "开始下载";
+}
+
+function escapeHtml(value) {
+  return String(value ?? "")
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;");
 }
