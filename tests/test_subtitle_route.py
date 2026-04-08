@@ -72,6 +72,21 @@ class SubtitleParsingTests(unittest.TestCase):
 
         self.assertIn("YOUTUBE_COOKIES_FROM_BROWSER", message)
 
+    def test_humanize_ydlp_error_handles_curly_apostrophe_and_format_issue(self) -> None:
+        job = web_app.Job(
+            job_id="job-youtube-format",
+            url="https://www.youtube.com/watch?v=abcdefghijk",
+            preset=web_app.AUDIO_PRESET_NAME,
+            use_cookies=True,
+            generate_transcript=False,
+        )
+
+        not_bot = web_app.humanize_ydlp_error(job, "Sign in to confirm you’re not a bot")
+        format_issue = web_app.humanize_ydlp_error(job, "Requested format is not available")
+
+        self.assertIn("YOUTUBE_COOKIES_FROM_BROWSER", not_bot)
+        self.assertIn("YTDLP_REMOTE_COMPONENTS", format_issue)
+
     def test_load_subtitle_text_parses_youtube_json3_and_dedupes_lines(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             subtitle_path = Path(temp_dir) / "captions.json3"

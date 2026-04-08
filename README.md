@@ -98,6 +98,7 @@ python webui/app.py
 - `AI_CLEANUP_API_KEY` / `ARTICLE_DRAFT_API_KEY`：清洗稿和解析稿必需
 - `YOUTUBE_COOKIES_FROM_BROWSER` / `YOUTUBE_COOKIES_PATH`：提升 YouTube 下载和字幕直提成功率
 - `BILIBILI_COOKIES_PATH` / `BILIBILI_COOKIES_FROM_BROWSER`：提升 B 站字幕直提成功率
+- `YTDLP_REMOTE_COMPONENTS=ejs:github`：为部分受 JS challenge 保护的 YouTube 视频启用格式解析
 
 开源协作约定：
 
@@ -232,6 +233,7 @@ video-downloade capture "https://www.youtube.com/watch?v=..." \
 
 ```bash
 YOUTUBE_COOKIES_FROM_BROWSER=chrome
+YTDLP_REMOTE_COMPONENTS=ejs:github
 ```
 
 常见写法：
@@ -275,7 +277,7 @@ BILIBILI_COOKIES_PATH=/absolute/path/to/bilibili.cookies.txt
 
 - 浏览器登录态
 - 或重新导出的 YouTube cookies
-- 某些情况下还需要额外的 YouTube extractor 参数或 PO Token 流程
+- 某些情况下还需要额外的 YouTube extractor 参数、EJS remote components 或 PO Token 流程
 
 官方参考：
 

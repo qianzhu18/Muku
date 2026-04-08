@@ -848,6 +848,7 @@ def doctor_command(as_json: bool) -> None:
         "subtitle_auth_configured": subtitle_auth_configured,
         "youtube_auth_configured": web_app.platform_auth_configured("YouTube"),
         "bilibili_auth_configured": web_app.platform_auth_configured("Bilibili"),
+        "ytdlp_remote_components": list(web_app.YTDLP_REMOTE_COMPONENTS),
         "transcription_enabled": web_app.ENABLE_TRANSCRIPTION,
         "transcription_model": web_app.OPENROUTER_TRANSCRIPTION_MODEL,
         "openrouter_key_configured": bool(web_app.transcribe_audio.__globals__.get("OPENROUTER_API_KEY")),

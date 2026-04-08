@@ -100,6 +100,11 @@ YOUTUBE_COOKIES_PATH = os.environ.get("YOUTUBE_COOKIES_PATH", "").strip()
 YOUTUBE_COOKIES_FROM_BROWSER = os.environ.get("YOUTUBE_COOKIES_FROM_BROWSER", "").strip()
 BILIBILI_COOKIES_PATH = os.environ.get("BILIBILI_COOKIES_PATH", "").strip()
 BILIBILI_COOKIES_FROM_BROWSER = os.environ.get("BILIBILI_COOKIES_FROM_BROWSER", "").strip()
+YTDLP_REMOTE_COMPONENTS = tuple(
+    component.strip()
+    for component in os.environ.get("YTDLP_REMOTE_COMPONENTS", "ejs:github").split(",")
+    if component.strip()
+)
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "2"))
 HOST = os.environ.get("HOST", "0.0.0.0")
 PORT = int(os.environ.get("PORT", "8080"))
@@ -312,8 +317,9 @@ def resolve_cookie_options(url: str) -> dict:
 def humanize_ydlp_error(job: Job, error_message: str) -> str:
     platform = detect_platform(job.url)
     normalized = (error_message or "").strip()
+    folded = normalized.replace("’", "'")
 
-    if platform == "YouTube" and "Sign in to confirm you're not a bot" in normalized:
+    if platform == "YouTube" and "Sign in to confirm you're not a bot" in folded:
         if platform_auth_configured("YouTube"):
             return (
                 "YouTube 当前拒绝了这次下载请求。通常是登录态失效、浏览器没有登录 YouTube，"
@@ -324,6 +330,13 @@ def humanize_ydlp_error(job: Job, error_message: str) -> str:
             "YouTube 现在经常会对 yt-dlp 请求做 bot 校验。当前没有检测到可用于 YouTube 的登录态，"
             "请在 .env 里配置 `YOUTUBE_COOKIES_FROM_BROWSER=chrome`，或填写 "
             "`YOUTUBE_COOKIES_PATH=/absolute/path/to/youtube.cookies.txt` 后重试。"
+        )
+
+    if platform == "YouTube" and "Requested format is not available" in normalized:
+        return (
+            "这条 YouTube 视频当前返回的是受挑战保护的格式集合。通常需要启用 JS challenge 远程组件，"
+            "并优先使用浏览器登录态。项目现在建议在 .env 配置 "
+            "`YOUTUBE_COOKIES_FROM_BROWSER=chrome`，并保留默认 `YTDLP_REMOTE_COMPONENTS=ejs:github`。"
         )
 
     return normalized
@@ -352,6 +365,8 @@ def build_ydl_options(job: Job, *, preset_name: str | None = None, base_dir: str
         options["merge_output_format"] = preset_conf["merge_output_format"]
     if "postprocessors" in preset_conf:
         options["postprocessors"] = preset_conf["postprocessors"]
+    if detect_platform(job.url) == "YouTube" and YTDLP_REMOTE_COMPONENTS:
+        options["remote_components"] = list(YTDLP_REMOTE_COMPONENTS)
     if job.use_cookies:
         options.update(resolve_cookie_options(job.url))
     return options
