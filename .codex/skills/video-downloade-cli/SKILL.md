@@ -36,6 +36,9 @@ video-downloade audio "/path/to/file.mp3" --json
 # 反查 sidecar
 video-downloade artifacts "/path/to/file.mp3" --json
 
+# 逐字稿 -> 知识库整理稿
+video-downloade knowledge "/path/to/file.mp3" --json
+
 # 环境检查
 video-downloade doctor --json
 ```
@@ -46,6 +49,7 @@ video-downloade doctor --json
 - 用户只想下载文件：用 `download`
 - 用户已经有本地音频：用 `audio`
 - 用户已经拿到某个 sidecar，想定位整组文件或 metadata：用 `artifacts`
+- 用户想把逐字稿整理成知识库条目：先 `capture`，再 `knowledge`
 - 先确认配置、依赖、密钥状态：用 `doctor`
 
 ## Output strategy
@@ -71,6 +75,7 @@ video-downloade audio FILE --cleanup-prompt-file ./角色提示词.md --article-
 
 - `xxx - 原始逐字稿.txt`
 - `xxx - 解析稿.md`
+- `xxx - 知识库.md`
 - `xxx - 逐字稿.md`
 - `xxx - 转写信息.json`
 

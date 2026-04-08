@@ -1,3 +1,4 @@
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -151,6 +152,58 @@ class TranscriptRoutingTests(unittest.TestCase):
 
         self.assertEqual(web_app.YOUTUBE_COOKIES_PATH, original_youtube)
         self.assertEqual(web_app.BILIBILI_COOKIES_PATH, original_bilibili)
+
+    def test_artifact_paths_from_directory_resolves_metadata(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base_path = Path(temp_dir) / "Sample [abc]" / "Sample [abc].mp3"
+            base_path.parent.mkdir(parents=True)
+            artifact_paths = web_app.build_artifact_paths(base_path)
+            artifact_paths["meta_path"].write_text(
+                '{"artifact_base_path": "' + str(base_path).replace("\\", "\\\\") + '"}\n',
+                encoding="utf-8",
+            )
+
+            resolved = web_cli._artifact_paths_from_target(base_path.parent)
+
+        self.assertEqual(resolved["markdown_path"].resolve(), artifact_paths["markdown_path"].resolve())
+
+    def test_run_knowledge_jobs_writes_knowledge_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base_path = Path(temp_dir) / "Sample [abc]" / "Sample [abc].mp3"
+            base_path.parent.mkdir(parents=True)
+            artifact_paths = web_app.build_artifact_paths(base_path)
+            artifact_paths["raw_path"].write_text("raw transcript\n", encoding="utf-8")
+            artifact_paths["markdown_path"].write_text("# Sample\n\n## 清洗稿\n\nclean transcript\n", encoding="utf-8")
+            artifact_paths["meta_path"].write_text(
+                (
+                    '{'
+                    f'"artifact_base_path": "{str(base_path).replace("\\", "\\\\")}", '
+                    '"title": "Sample", '
+                    '"source_url": "https://example.com/video", '
+                    '"platform": "YouTube"'
+                    '}\n'
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                web_cli.cleanup_backend,
+                "generate_knowledge_draft",
+                return_value={
+                    "provider": "zhipu-coding",
+                    "model": "GLM-4.5",
+                    "text": "# Sample\n\n## 一句话总结\n\nsummary",
+                    "raw_response": {"id": "mock"},
+                },
+            ):
+                results = web_cli._run_knowledge_jobs(targets=(base_path,), overwrite=True)
+
+            knowledge_text = artifact_paths["knowledge_path"].read_text(encoding="utf-8")
+            metadata = json.loads(artifact_paths["meta_path"].read_text(encoding="utf-8"))
+
+        self.assertEqual(results[0]["status"], "Done")
+        self.assertIn("一句话总结", knowledge_text)
+        self.assertEqual(metadata["knowledge_provider"], "zhipu-coding")
 
     def test_start_accepts_share_text_payload(self) -> None:
         share_text = (

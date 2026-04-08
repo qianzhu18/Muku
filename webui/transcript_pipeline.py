@@ -75,6 +75,7 @@ def build_artifact_paths(base_path: Path) -> dict[str, Path]:
     return {
         "raw_path": base_path.with_name(f"{stem} - 原始逐字稿.txt"),
         "article_path": base_path.with_name(f"{stem} - 解析稿.md"),
+        "knowledge_path": base_path.with_name(f"{stem} - 知识库.md"),
         "markdown_path": base_path.with_name(f"{stem} - 逐字稿.md"),
         "meta_path": base_path.with_name(f"{stem} - 转写信息.json"),
     }

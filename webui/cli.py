@@ -12,10 +12,12 @@ try:
     from . import app as web_app
     from . import openai_compatible_cleanup as cleanup_backend
     from . import openrouter_backends as openrouter_backend
+    from .transcript_pipeline import detect_platform
 except ImportError:
     import app as web_app
     import openai_compatible_cleanup as cleanup_backend
     import openrouter_backends as openrouter_backend
+    from transcript_pipeline import detect_platform
 
 
 DEFAULT_VIDEO_PRESET = web_app.VIDEO_PRESET_NAME
@@ -112,7 +114,8 @@ def _emit_results(results: list[dict], output_mode: str) -> None:
     if output_mode == "paths":
         for result in results:
             primary_path = (
-                result.get("transcript_path")
+                result.get("knowledge_path")
+                or result.get("transcript_path")
                 or result.get("markdown_path")
                 or result.get("download_path")
                 or result.get("artifact_dir")
@@ -135,6 +138,8 @@ def _emit_results(results: list[dict], output_mode: str) -> None:
             click.echo(f"  raw: {result['raw_path']}")
         if result.get("article_path"):
             click.echo(f"  article: {result['article_path']}")
+        if result.get("knowledge_path"):
+            click.echo(f"  knowledge: {result['knowledge_path']}")
         if result.get("meta_path"):
             click.echo(f"  meta: {result['meta_path']}")
         if result.get("artifact_dir"):
@@ -315,6 +320,15 @@ def _run_local_audio_jobs(
 
 def _artifact_paths_from_target(target: Path) -> dict[str, Path]:
     target = target.expanduser().resolve()
+    if target.is_dir():
+        meta_candidates = sorted(target.glob("* - 转写信息.json"))
+        if meta_candidates:
+            return _artifact_paths_from_target(meta_candidates[0])
+        markdown_candidates = sorted(target.glob("* - 逐字稿.md"))
+        if markdown_candidates:
+            return _artifact_paths_from_target(markdown_candidates[0])
+        raise click.ClickException(f"目录里没有找到逐字稿产物：{target}")
+
     if target.name.endswith(" - 转写信息.json") and target.exists():
         meta = json.loads(target.read_text(encoding="utf-8"))
         artifact_base = meta.get("artifact_base_path") or meta.get("audio_path")
@@ -329,6 +343,7 @@ def _artifact_paths_from_target(target: Path) -> dict[str, Path]:
     known_suffixes = (
         " - 原始逐字稿.txt",
         " - 解析稿.md",
+        " - 知识库.md",
         " - 逐字稿.md",
         " - 转写信息.json",
     )
@@ -373,6 +388,11 @@ def _summarize_metadata(metadata: dict) -> dict:
         "article_base_url",
         "article_prompt_file",
         "article_error",
+        "knowledge_provider",
+        "knowledge_model",
+        "knowledge_base_url",
+        "knowledge_prompt_file",
+        "knowledge_error",
     ]
     return {key: metadata.get(key) for key in keys if key in metadata}
 
@@ -389,14 +409,116 @@ def _artifact_record_with_metadata(target: Path, *, include_full_metadata: bool)
         "artifact_dir": str(artifact_paths["markdown_path"].parent),
         "raw_path": str(artifact_paths["raw_path"]),
         "article_path": str(artifact_paths["article_path"]),
+        "knowledge_path": str(artifact_paths["knowledge_path"]),
         "markdown_path": str(artifact_paths["markdown_path"]),
         "meta_path": str(meta_path),
         "raw_exists": artifact_paths["raw_path"].exists(),
         "article_exists": artifact_paths["article_path"].exists(),
+        "knowledge_exists": artifact_paths["knowledge_path"].exists(),
         "markdown_exists": artifact_paths["markdown_path"].exists(),
         "meta_exists": meta_path.exists(),
         "metadata": metadata if include_full_metadata else _summarize_metadata(metadata),
     }
+
+
+def _load_artifact_metadata(artifact_paths: dict[str, Path]) -> dict:
+    meta_path = artifact_paths["meta_path"]
+    if not meta_path.exists():
+        raise click.ClickException(f"找不到 metadata 文件：{meta_path}")
+    return json.loads(meta_path.read_text(encoding="utf-8"))
+
+
+def _artifact_base_path_from_paths(artifact_paths: dict[str, Path], metadata: dict) -> Path:
+    artifact_base = metadata.get("artifact_base_path")
+    if artifact_base:
+        return Path(artifact_base).expanduser().resolve()
+
+    markdown_path = artifact_paths["markdown_path"]
+    suffix = " - 逐字稿.md"
+    stem = markdown_path.name[: -len(suffix)] if markdown_path.name.endswith(suffix) else markdown_path.stem
+    return markdown_path.with_name(stem)
+
+
+def _build_knowledge_source_text(artifact_paths: dict[str, Path]) -> str:
+    sections: list[str] = []
+    if artifact_paths["markdown_path"].exists():
+        sections.append("## 逐字稿\n\n" + artifact_paths["markdown_path"].read_text(encoding="utf-8").strip())
+    if artifact_paths["article_path"].exists():
+        sections.append("## 解析稿\n\n" + artifact_paths["article_path"].read_text(encoding="utf-8").strip())
+    if artifact_paths["raw_path"].exists():
+        sections.append("## 原始逐字稿\n\n" + artifact_paths["raw_path"].read_text(encoding="utf-8").strip())
+    if not sections:
+        raise click.ClickException("该目标还没有可用于整理知识库的逐字稿资产。")
+    return "\n\n".join(section for section in sections if section.strip()).strip()
+
+
+def _run_knowledge_jobs(
+    *,
+    targets: tuple[Path, ...],
+    overwrite: bool,
+) -> list[dict]:
+    results: list[dict] = []
+
+    for target in targets:
+        artifact_paths = _artifact_paths_from_target(target)
+        metadata = _load_artifact_metadata(artifact_paths)
+        artifact_base_path = _artifact_base_path_from_paths(artifact_paths, metadata)
+        knowledge_path = artifact_paths["knowledge_path"]
+
+        if knowledge_path.exists() and not overwrite:
+            results.append(
+                {
+                    "target": str(target.expanduser().resolve()),
+                    "status": "Skipped",
+                    "knowledge_path": str(knowledge_path),
+                    "artifact_dir": str(knowledge_path.parent),
+                    "title": metadata.get("title") or artifact_base_path.stem,
+                    "error": None,
+                    "knowledge_exists": True,
+                }
+            )
+            continue
+
+        source_text = _build_knowledge_source_text(artifact_paths)
+        title = metadata.get("title") or artifact_base_path.stem
+        source_url = metadata.get("source_url") or ""
+        platform = metadata.get("platform") or detect_platform(source_url)
+        knowledge_result = cleanup_backend.generate_knowledge_draft(
+            text=source_text,
+            title=title,
+            source_url=source_url,
+            platform=platform,
+        )
+        knowledge_text = knowledge_result["text"].strip()
+        knowledge_path.parent.mkdir(parents=True, exist_ok=True)
+        knowledge_path.write_text(knowledge_text + "\n", encoding="utf-8")
+
+        metadata["knowledge_provider"] = knowledge_result["provider"]
+        metadata["knowledge_model"] = knowledge_result["model"]
+        metadata["knowledge_base_url"] = cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL
+        metadata["knowledge_prompt_file"] = cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE
+        metadata["knowledge_error"] = None
+        metadata["knowledge_response"] = knowledge_result["raw_response"]
+        artifact_paths["meta_path"].write_text(
+            json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+        results.append(
+            {
+                "target": str(target.expanduser().resolve()),
+                "status": "Done",
+                "knowledge_path": str(knowledge_path),
+                "artifact_dir": str(knowledge_path.parent),
+                "title": title,
+                "error": None,
+                "knowledge_exists": True,
+                "provider": knowledge_result["provider"],
+                "model": knowledge_result["model"],
+            }
+        )
+
+    return results
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -936,6 +1058,89 @@ def artifacts_command(
         for target in resolved_targets
     ]
     final_output_mode = _normalize_output_mode(output_mode, as_json)
+    _write_result_file(results, result_file)
+    _emit_results(results, final_output_mode)
+
+
+@main.command("knowledge")
+@click.argument("targets", nargs=-1, type=click.Path(path_type=Path))
+@click.option(
+    "--input-file",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    help="从文本文件读取逐字稿产物路径，每行一个。",
+)
+@click.option("--stdin", "stdin_enabled", is_flag=True, help="从标准输入读取逐字稿产物路径，每行一个。")
+@click.option(
+    "--output",
+    "output_mode",
+    type=click.Choice(OUTPUT_CHOICES),
+    default="json",
+    show_default=True,
+    help="结果输出格式。",
+)
+@click.option("--json", "as_json", is_flag=True, help="兼容旧用法，等同于 --output json。")
+@click.option(
+    "--result-file",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="把结果 JSON 额外写入文件。",
+)
+@click.option(
+    "--model",
+    "knowledge_model",
+    help="覆盖本次知识库整理模型。",
+)
+@click.option(
+    "--prompt-file",
+    "knowledge_prompt_file",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    help="覆盖知识库整理提示词文件。",
+)
+@click.option(
+    "--overwrite/--skip-existing",
+    default=False,
+    help="是否覆盖已有的知识库文件。",
+)
+def knowledge_command(
+    targets: tuple[Path, ...],
+    input_file: Path | None,
+    stdin_enabled: bool,
+    output_mode: str,
+    as_json: bool,
+    result_file: Path | None,
+    knowledge_model: str | None,
+    knowledge_prompt_file: Path | None,
+    overwrite: bool,
+) -> None:
+    """基于现有逐字稿 sidecar 生成知识库整理稿。"""
+    resolved_targets = _collect_line_inputs(
+        values=tuple(str(target) for target in targets),
+        input_file=input_file,
+        stdin_enabled=stdin_enabled,
+        label="逐字稿路径",
+    )
+    final_output_mode = _normalize_output_mode(output_mode, as_json)
+    with _runtime_overrides():
+        if knowledge_model:
+            original_model = cleanup_backend.KNOWLEDGE_DRAFT_MODEL
+            cleanup_backend.KNOWLEDGE_DRAFT_MODEL = knowledge_model
+        else:
+            original_model = None
+        if knowledge_prompt_file:
+            original_prompt = cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE
+            cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE = str(knowledge_prompt_file.expanduser().resolve())
+        else:
+            original_prompt = None
+        try:
+            results = _run_knowledge_jobs(
+                targets=tuple(Path(target) for target in resolved_targets),
+                overwrite=overwrite,
+            )
+        finally:
+            if original_model is not None:
+                cleanup_backend.KNOWLEDGE_DRAFT_MODEL = original_model
+            if original_prompt is not None:
+                cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE = original_prompt
+
     _write_result_file(results, result_file)
     _emit_results(results, final_output_mode)
 

@@ -162,6 +162,9 @@ video-downloade audio "/path/to/file.mp3" --source-url "https://example.com" --j
 video-downloade artifacts "/path/to/file.mp3" --json
 video-downloade artifacts "/path/to/file.mp3" --full-metadata --json
 
+# 基于逐字稿资产生成知识库整理稿
+video-downloade knowledge "/path/to/file.mp3" --json
+
 # 检查环境与配置
 video-downloade doctor --json
 
@@ -187,6 +190,7 @@ python -m webui.cli --help
 - `--transcription-model` / `--cleanup-model` / `--article-model`：单次任务覆盖模型
 - `--cleanup/--no-cleanup`、`--article/--no-article`：控制成本和处理深度
 - `artifacts` 默认返回 metadata 摘要；加 `--full-metadata` 才返回完整 `转写信息.json`
+- `knowledge`：基于已有逐字稿 sidecar 生成 `xxx - 知识库.md`
 
 ## 逐字稿链路
 
@@ -204,11 +208,13 @@ python -m webui.cli --help
 - 清洗后端：智谱 OpenAI 兼容接口 `GLM-4.5`
 - 清洗提示词：`角色提示词.md`
 - 解析提示词：`解析提示词.md`
+- 知识库提示词：`知识库提示词.md`
 
 如果你选择 `Markdown 逐字稿（字幕优先）`，成功后通常会额外产出：
 
 - `xxx - 原始逐字稿.txt`
 - `xxx - 解析稿.md`
+- `xxx - 知识库.md`
 - `xxx - 逐字稿.md`
 - `xxx - 转写信息.json`
 
@@ -322,7 +328,7 @@ TRANSCRIPTION_LANGUAGE=auto
 如果后续你要让 Claude Code、Codex 或其他 agent 在联网后直接调用这个仓库，推荐流程是：
 
 1. 先跑 `video-downloade doctor --json`
-2. 再用 `capture` / `download` / `audio` / `artifacts`
+2. 再用 `capture` / `download` / `audio` / `artifacts` / `knowledge`
 3. YouTube 和 Bilibili 分开配置 Cookies
 
 ## 目录结构

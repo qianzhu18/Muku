@@ -28,6 +28,9 @@ video-downloade audio "/path/to/file.mp3" --json
 # Inspect sidecars
 video-downloade artifacts "/path/to/file.mp3" --json
 
+# Build knowledge-base note from transcript assets
+video-downloade knowledge "/path/to/file.mp3" --json
+
 # Environment / auth check
 video-downloade doctor --json
 ```
@@ -38,6 +41,7 @@ video-downloade doctor --json
 - 只想下载视频或 MP3：用 `download`
 - 已经有本地音频：用 `audio`
 - 已经拿到 sidecar 路径：用 `artifacts`
+- 想把逐字稿整理成结构化知识库：先 `capture`，再 `knowledge`
 - 不确定依赖、模型、Cookies 是否已配置：先跑 `doctor`
 
 ## Input handling
@@ -75,6 +79,7 @@ BILIBILI_COOKIES_PATH=/absolute/path/to/bilibili.cookies.txt
 
 - `xxx - 原始逐字稿.txt`
 - `xxx - 解析稿.md`
+- `xxx - 知识库.md`
 - `xxx - 逐字稿.md`
 - `xxx - 转写信息.json`
 

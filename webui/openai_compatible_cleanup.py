@@ -61,6 +61,23 @@ ARTICLE_DRAFT_PROMPT_FILE = os.environ.get(
     _default_prompt_path("解析提示词.md"),
 ).strip()
 
+ENABLE_KNOWLEDGE_DRAFT = os.environ.get("ENABLE_KNOWLEDGE_DRAFT", "true").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+    "on",
+}
+KNOWLEDGE_DRAFT_BASE_URL = os.environ.get("KNOWLEDGE_DRAFT_BASE_URL", ARTICLE_DRAFT_BASE_URL).rstrip("/")
+KNOWLEDGE_DRAFT_API_KEY = os.environ.get("KNOWLEDGE_DRAFT_API_KEY", ARTICLE_DRAFT_API_KEY).strip()
+KNOWLEDGE_DRAFT_MODEL = os.environ.get("KNOWLEDGE_DRAFT_MODEL", ARTICLE_DRAFT_MODEL).strip()
+KNOWLEDGE_DRAFT_PROVIDER_LABEL = os.environ.get(
+    "KNOWLEDGE_DRAFT_PROVIDER_LABEL", ARTICLE_DRAFT_PROVIDER_LABEL
+).strip()
+KNOWLEDGE_DRAFT_PROMPT_FILE = os.environ.get(
+    "KNOWLEDGE_DRAFT_PROMPT_FILE",
+    _default_prompt_path("知识库提示词.md"),
+).strip()
+
 AI_TEXT_TIMEOUT_SECONDS = int(os.environ.get("AI_TEXT_TIMEOUT_SECONDS", "300"))
 AI_TEXT_MAX_RETRIES = int(os.environ.get("AI_TEXT_MAX_RETRIES", "2"))
 
@@ -112,6 +129,35 @@ def generate_article_draft(
     }
 
 
+def generate_knowledge_draft(
+    *,
+    text: str,
+    title: str,
+    source_url: str,
+    platform: str,
+) -> dict:
+    if not KNOWLEDGE_DRAFT_API_KEY:
+        raise RuntimeError("KNOWLEDGE_DRAFT_API_KEY is not configured.")
+
+    payload = build_knowledge_payload(
+        text=text,
+        title=title,
+        source_url=source_url,
+        platform=platform,
+    )
+    data = _post_chat(
+        base_url=KNOWLEDGE_DRAFT_BASE_URL,
+        api_key=KNOWLEDGE_DRAFT_API_KEY,
+        payload=payload,
+    )
+    return {
+        "provider": KNOWLEDGE_DRAFT_PROVIDER_LABEL,
+        "model": KNOWLEDGE_DRAFT_MODEL,
+        "text": _extract_text(data),
+        "raw_response": data,
+    }
+
+
 def build_cleanup_payload(*, text: str, title: str, source_url: str) -> dict:
     prompt = _load_prompt(AI_CLEANUP_PROMPT_FILE, "AI cleanup prompt")
     return {
@@ -157,6 +203,35 @@ def build_article_payload(
                     f"- 平台：{platform}\n"
                     f"- 原始链接：{source_url}\n\n"
                     "【逐字稿全文】\n"
+                    f"{text}"
+                ),
+            },
+        ],
+    }
+
+
+def build_knowledge_payload(
+    *,
+    text: str,
+    title: str,
+    source_url: str,
+    platform: str,
+) -> dict:
+    prompt = _load_prompt(KNOWLEDGE_DRAFT_PROMPT_FILE, "Knowledge draft prompt")
+    return {
+        "model": KNOWLEDGE_DRAFT_MODEL,
+        "temperature": 0.25,
+        "messages": [
+            {"role": "system", "content": prompt},
+            {
+                "role": "user",
+                "content": (
+                    "请基于下面的视频逐字稿资产，整理成面向知识库沉淀的中文笔记。\n\n"
+                    "【元信息】\n"
+                    f"- 标题：{title}\n"
+                    f"- 平台：{platform}\n"
+                    f"- 原始链接：{source_url}\n\n"
+                    "【逐字稿资产】\n"
                     f"{text}"
                 ),
             },
