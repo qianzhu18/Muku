@@ -284,7 +284,6 @@ video-downloade capture \
 `--result-file + --resume` 现在会按条目持续写 checkpoint；如果中途停掉，再跑同一条命令就会跳过已经完成的 URL，并优先复用下载目录里已有的逐字稿 sidecar。对长批量任务来说，重跑时通常能省掉绝大部分重复时间。
 
 更完整的 prompt 模板、demo 链接文件和实操说明见 [docs/creator-batch-workflow.md](docs/creator-batch-workflow.md)。
-
 ## Open Source
 
 本项目当前采用 [MIT License](LICENSE)。
