@@ -164,6 +164,22 @@ class SubtitleParsingTests(unittest.TestCase):
 
         self.assertEqual(text, "Hello world\nSecond line")
 
+    def test_prepare_audio_for_transcription_uses_temp_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "sample.mp3"
+            audio_path.write_text("audio", encoding="utf-8")
+
+            def fake_run(command, check, capture_output, text):
+                Path(command[-1]).write_text("prepared", encoding="utf-8")
+                return mock.Mock()
+
+            with mock.patch.object(web_app.subprocess, "run", side_effect=fake_run):
+                prepared_path = web_app.prepare_audio_for_transcription(audio_path)
+
+        self.assertNotEqual(prepared_path.parent, audio_path.parent)
+        self.assertTrue(prepared_path.name.endswith(".transcribe.mp3"))
+        prepared_path.unlink(missing_ok=True)
+
 
 class TranscriptRoutingTests(unittest.TestCase):
     def test_runtime_overrides_patch_platform_cookie_paths(self) -> None:

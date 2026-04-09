@@ -23,6 +23,12 @@ pip install -e .
 python -m webui.cli --help
 ```
 
+建议第一次接入前先跑：
+
+```bash
+video-downloade doctor --json
+```
+
 ## 最推荐的工作流
 
 ### URL -> 逐字稿 + 解析稿 + 知识库稿
@@ -63,6 +69,14 @@ cat ./urls.txt | video-downloade capture --stdin --output paths
 - 已经有逐字稿资产，只想补生成知识库稿：`knowledge`
 - 想先检查依赖、模型、Cookies、提示词：`doctor`
 
+## 多平台建议
+
+| 平台 | 最稳命令习惯 | 推荐认证方式 |
+| --- | --- | --- |
+| YouTube | `capture --knowledge --youtube-cookies-from-browser chrome --json` | 浏览器登录态优先 |
+| Bilibili | `capture --knowledge --bilibili-cookies-from-browser chrome --json` | 平台专用 cookies 优先 |
+| Douyin | `download` 或 `capture` 配合 `--douyin-cookies-*` | 浏览器登录态或专用 `cookies.txt` |
+
 ## AI 友好的输出约定
 
 - 默认推荐 `--json`
@@ -89,12 +103,13 @@ video-downloade audio FILE --no-article --knowledge --json
 
 ## Cookies 与平台登录态
 
-YouTube 或 Bilibili 字幕优先链路更稳定的做法，是按平台分开配置登录态：
+推荐按平台分开配置登录态，而不是所有平台共用一份全局 cookies：
 
 ```bash
 video-downloade capture URL \
   --youtube-cookies-from-browser chrome \
   --bilibili-cookies-path ./cookies/bilibili.cookies.txt \
+  --douyin-cookies-from-browser chrome \
   --json
 ```
 
@@ -106,6 +121,20 @@ YOUTUBE_COOKIES_PATH=/absolute/path/to/youtube.cookies.txt
 BILIBILI_COOKIES_PATH=/absolute/path/to/bilibili.cookies.txt
 DOUYIN_COOKIES_PATH=/absolute/path/to/douyin.cookies.txt
 ```
+
+推荐检查顺序：
+
+1. 目标平台先在浏览器中登录。
+2. 优先尝试 `*_COOKIES_FROM_BROWSER=chrome`。
+3. 执行 `video-downloade doctor --json`。
+4. 确认 `youtube_auth_configured`、`bilibili_auth_configured`、`douyin_auth_configured` 等字段。
+5. 只有浏览器方案不稳定时，再回退到 `*_COOKIES_PATH`。
+
+## 产物说明
+
+- 下载目录默认只保留最终视频或最终 MP3，以及 sidecar 文稿。
+- 转写前预处理音频会写到系统临时目录，不再在产物目录里额外留下第二个可见 MP3。
+- 只有当你显式设置 `KEEP_TRANSCRIPTION_INPUT=true` 时，才建议保留这类调试输入。
 
 ## 容器里调用 CLI
 

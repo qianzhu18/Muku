@@ -11,6 +11,12 @@
 - `SKILL.md`：工作流与命令约定
 - `agents/openai.yaml`：面向 Codex/OpenAI 风格 skill 列表的界面元数据
 
+推荐使用顺序：
+
+1. 先跑 `video-downloade doctor --json`
+2. 再按平台补 `--youtube-cookies-*` / `--bilibili-cookies-*` / `--douyin-cookies-*`
+3. 最后让 agent 调 `capture`、`download`、`audio` 等稳定 JSON 输出命令
+
 ## 快速安装到 Codex
 
 推荐直接运行仓库脚本：

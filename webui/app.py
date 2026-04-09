@@ -1,4 +1,5 @@
 import html
+import hashlib
 import json
 import os
 import re
@@ -456,7 +457,14 @@ def primary_info_dict(info: dict | None) -> dict | None:
 
 
 def prepare_audio_for_transcription(audio_path: Path) -> Path:
-    prepared_path = audio_path.with_name(f"{audio_path.stem}.transcribe.mp3")
+    source_path = audio_path.expanduser().resolve()
+    stat = source_path.stat()
+    fingerprint = hashlib.sha1(
+        f"{source_path}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8")
+    ).hexdigest()[:12]
+    prepared_dir = Path(tempfile.gettempdir()) / "video-downloade-transcription"
+    prepared_dir.mkdir(parents=True, exist_ok=True)
+    prepared_path = prepared_dir / f"{audio_path.stem}.{fingerprint}.transcribe.mp3"
     if prepared_path.exists() and prepared_path.stat().st_mtime >= audio_path.stat().st_mtime:
         return prepared_path
 
