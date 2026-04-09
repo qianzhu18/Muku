@@ -411,6 +411,42 @@ class TranscriptRoutingTests(unittest.TestCase):
         self.assertEqual(job.download_path, str(media_path))
         self.assertEqual(job.title, "Sample")
 
+    def test_download_media_uses_douyin_provider_when_cookies_enabled(self) -> None:
+        job = web_app.Job(
+            job_id="job-douyin-download",
+            url="https://www.douyin.com/video/1234567890",
+            preset=web_app.VIDEO_PRESET_NAME,
+            use_cookies=True,
+            generate_transcript=False,
+        )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            media_dir = Path(temp_dir) / "Sample [1234567890]"
+            media_dir.mkdir(parents=True)
+            media_path = media_dir / "Sample [1234567890].mp4"
+            media_path.write_text("video", encoding="utf-8")
+
+            with mock.patch.object(
+                web_app,
+                "resolve_cookie_options",
+                return_value={"cookiefile": "/tmp/douyin.cookies.txt"},
+            ), mock.patch.object(
+                web_app,
+                "download_douyin_media",
+                return_value={
+                    "title": "Sample",
+                    "download_path": media_path,
+                    "artifact_dir": media_dir,
+                },
+            ) as download_douyin_media, mock.patch.object(web_app.yt_dlp, "YoutubeDL") as youtube_dl:
+                resolved = web_app.download_media(job, web_app.VIDEO_PRESET_NAME)
+
+        self.assertEqual(resolved, media_path)
+        self.assertEqual(job.download_path, str(media_path))
+        self.assertEqual(job.title, "Sample")
+        download_douyin_media.assert_called_once()
+        youtube_dl.assert_not_called()
+
     def test_run_transcript_job_prefers_direct_subtitles(self) -> None:
         job = web_app.Job(
             job_id="job-1",
@@ -458,6 +494,61 @@ class TranscriptRoutingTests(unittest.TestCase):
         run_transcription_pipeline.assert_called_once()
         _, kwargs = run_transcription_pipeline.call_args
         self.assertEqual(kwargs["extra_meta"]["transcript_route"], "subtitle_probe_fallback_to_audio")
+
+    def test_run_transcript_job_skips_subtitle_probe_for_douyin(self) -> None:
+        job = web_app.Job(
+            job_id="job-douyin-transcript",
+            url="https://www.douyin.com/video/1234567890",
+            preset=web_app.TRANSCRIPT_PRESET_NAME,
+            use_cookies=True,
+            generate_transcript=True,
+        )
+        audio_path = Path("/tmp/example/douyin.mp3")
+
+        with mock.patch.object(
+            web_app,
+            "resolve_cookie_options",
+            return_value={"cookiefile": "/tmp/douyin.cookies.txt"},
+        ), mock.patch.object(web_app, "try_extract_direct_subtitles") as try_extract_direct_subtitles, mock.patch.object(
+            web_app,
+            "download_media",
+            return_value=audio_path,
+        ) as download_media, mock.patch.object(web_app, "run_transcription_pipeline") as run_transcription_pipeline:
+            web_app.run_transcript_job(job)
+
+        try_extract_direct_subtitles.assert_not_called()
+        download_media.assert_called_once_with(job, web_app.AUDIO_PRESET_NAME)
+        _, kwargs = run_transcription_pipeline.call_args
+        self.assertEqual(kwargs["extra_meta"]["transcript_route"], "douyin_audio_transcription")
+
+    def test_tasks_endpoint_includes_source_url_and_backend_error(self) -> None:
+        job = web_app.Job(
+            job_id="job-task-fields",
+            url="https://www.douyin.com/video/1234567890",
+            preset=web_app.VIDEO_PRESET_NAME,
+            use_cookies=True,
+            generate_transcript=False,
+        )
+        job.status = "Failed"
+        job.done = True
+        job.error = "friendly error"
+        job.backend_error = "raw backend error"
+
+        with web_app.jobs_lock:
+            web_app.jobs.clear()
+            web_app.jobs[job.job_id] = job
+
+        try:
+            with web_app.app.test_client() as client:
+                response = client.get("/api/tasks")
+        finally:
+            with web_app.jobs_lock:
+                web_app.jobs.clear()
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["tasks"][0]["source_url"], job.url)
+        self.assertEqual(payload["tasks"][0]["backend_error"], job.backend_error)
 
 
 if __name__ == "__main__":

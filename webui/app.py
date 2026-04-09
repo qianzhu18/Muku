@@ -16,6 +16,7 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request
 
 try:
+    from .douyin_provider import DouyinDownloadError, download_douyin_media
     from .env_config import load_env_file
     from .openai_compatible_cleanup import (
         AI_CLEANUP_BASE_URL,
@@ -47,6 +48,7 @@ try:
         write_sidecar_files,
     )
 except ImportError:
+    from douyin_provider import DouyinDownloadError, download_douyin_media
     from env_config import load_env_file
     from openai_compatible_cleanup import (
         AI_CLEANUP_BASE_URL,
@@ -902,6 +904,32 @@ def run_transcription_pipeline(job: Job, audio_path: Path, *, extra_meta: dict |
 
 
 def download_media(job: Job, preset_name: str) -> Path:
+    if detect_platform(job.url) == "Douyin" and job.use_cookies:
+        cookie_options = resolve_cookie_options(job.url)
+        if cookie_options:
+            set_job_state(job, status="Fetching Douyin media with dedicated provider...")
+            try:
+                result = download_douyin_media(
+                    url=job.url,
+                    preset_name=preset_name,
+                    output_dir=Path(DOWNLOAD_DIR),
+                    cookie_options=cookie_options,
+                    ffmpeg_bin=FFMPEG_BIN,
+                    audio_bitrate="192k",
+                )
+            except DouyinDownloadError as exc:
+                with job.lock:
+                    job.backend_error = str(exc)
+                raise
+
+            media_path = Path(result["download_path"])
+            with job.lock:
+                job.title = result["title"]
+                job.download_path = str(media_path)
+                job.artifact_dir = str(result["artifact_dir"])
+                job.progress = 100
+            return media_path
+
     options = build_ydl_options(job, preset_name=preset_name)
     selected_info: dict | None = None
     with yt_dlp.YoutubeDL(options) as ydl:
@@ -931,6 +959,16 @@ def download_media(job: Job, preset_name: str) -> Path:
 
 
 def run_transcript_job(job: Job) -> None:
+    if detect_platform(job.url) == "Douyin" and job.use_cookies and resolve_cookie_options(job.url):
+        set_job_state(job, status="Douyin detected. Skipping subtitle probe and downloading audio...")
+        media_path = download_media(job, AUDIO_PRESET_NAME)
+        run_transcription_pipeline(
+            job,
+            media_path,
+            extra_meta={"transcript_route": "douyin_audio_transcription"},
+        )
+        return
+
     subtitle_probe_error = None
     subtitle_result = None
 
@@ -1064,10 +1102,12 @@ def tasks():
                 {
                     "id": job.job_id,
                     "title": job.title,
+                    "source_url": job.url,
                     "status": job.status,
                     "progress": round(job.progress),
                     "done": job.done,
                     "error": job.error,
+                    "backend_error": job.backend_error,
                     "artifact_dir": job.artifact_dir,
                     "download_path": job.download_path,
                     "transcript_path": job.transcript_path,

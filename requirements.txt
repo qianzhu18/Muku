@@ -1,4 +1,6 @@
 Flask>=3.0,<4
 requests>=2.32,<3
+aiohttp>=3.10,<4
+gmssl>=3.2.2
 yt-dlp>=2024.10.0
 click>=8.1,<9

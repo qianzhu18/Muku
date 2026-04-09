@@ -155,6 +155,7 @@ def _job_summary(job: web_app.Job) -> dict:
         "status": job.status,
         "done": job.done,
         "error": job.error,
+        "backend_error": job.backend_error,
         "artifact_dir": job.artifact_dir,
         "download_path": job.download_path,
         "transcript_path": job.transcript_path,
