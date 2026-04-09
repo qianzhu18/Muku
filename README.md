@@ -18,6 +18,20 @@
 - Docker 部署：可直接 `docker compose up -d --build`
 - AI 集成：稳定 `--json / --output paths / --result-file` 输出，适合代理程序消费
 
+## 平台支持
+
+| 平台 | 输入形态 | 推荐认证方式 | 当前说明 |
+| --- | --- | --- | --- |
+| YouTube | 网页链接、分享链接 | `YOUTUBE_COOKIES_FROM_BROWSER=chrome` | 字幕优先，部分视频依赖 `YTDLP_REMOTE_COMPONENTS=ejs:github` |
+| Bilibili | 网页链接、分享文案 | `BILIBILI_COOKIES_FROM_BROWSER=chrome` 或 `BILIBILI_COOKIES_PATH` | 字幕直提成功率更高 |
+| Douyin | 网页链接、分享短链、分享文案 | `DOUYIN_COOKIES_FROM_BROWSER=chrome` 或 `DOUYIN_COOKIES_PATH` | 内部已带专用 fallback provider，适合分享链接下载 |
+
+建议第一次使用前先跑：
+
+```bash
+video-downloade doctor --json
+```
+
 ## 文档入口
 
 - [README.md](README.md)：项目概览、安装、快速上手
@@ -133,8 +147,16 @@ python -m webui.cli --help
 - `BILIBILI_COOKIES_PATH` / `BILIBILI_COOKIES_FROM_BROWSER`：提升 B 站字幕直提成功率
 - `DOUYIN_COOKIES_PATH` / `DOUYIN_COOKIES_FROM_BROWSER`：为受限抖音内容预留平台级登录态
 - `YTDLP_REMOTE_COMPONENTS=ejs:github`：为部分受 JS challenge 保护的 YouTube 视频启用格式解析
+- `KEEP_TRANSCRIPTION_INPUT=false`：默认不保留转写前预处理音频，避免下载目录里出现第二个 MP3
 
 知识库整理默认会沿用 `ARTICLE_DRAFT_*` 这一组配置；如果你想给知识库链路单独指定模型或后端，可以在 `.env` 里额外设置 `KNOWLEDGE_DRAFT_*`。
+
+推荐的认证检查顺序：
+
+1. 先在浏览器登录目标平台。
+2. 优先用 `*_COOKIES_FROM_BROWSER=chrome`。
+3. 再跑 `video-downloade doctor --json` 确认 `*_auth_configured` 已变成 `true`。
+4. 如果浏览器方案不可用，再回退到 `*_COOKIES_PATH=/absolute/path/to/cookies.txt`。
 
 ## Web 使用方式
 
@@ -155,6 +177,8 @@ python -m webui.cli --help
 ```
 
 这也为后续安卓端和分享入口复用同一套后端打下了基础。
+
+逐字稿链路的预处理音频默认写入系统临时目录，不会在下载目录里额外留下第二个可见 MP3；只有你显式开启 `KEEP_TRANSCRIPTION_INPUT=true` 时，才会保留这类调试文件。
 
 ## CLI 用法
 
@@ -227,6 +251,7 @@ video-downloade serve --port 8080
 - `--cookies-from-browser`：直接读取浏览器登录态
 - `--youtube-cookies-path` / `--youtube-cookies-from-browser`：只覆盖 YouTube 登录态
 - `--bilibili-cookies-path` / `--bilibili-cookies-from-browser`：只覆盖 Bilibili 登录态
+- `--douyin-cookies-path` / `--douyin-cookies-from-browser`：只覆盖 Douyin 登录态
 - `--cleanup/--no-cleanup`、`--article/--no-article`：控制成本和处理深度
 - `--knowledge/--no-knowledge`：在 `capture / download --transcript / audio` 后继续生成知识库稿
 - `--knowledge-model` / `--knowledge-prompt-file`：单次任务覆盖知识库整理配置
@@ -259,6 +284,16 @@ video-downloade capture \
 `--result-file + --resume` 现在会按条目持续写 checkpoint；如果中途停掉，再跑同一条命令就会跳过已经完成的 URL，并优先复用下载目录里已有的逐字稿 sidecar。对长批量任务来说，重跑时通常能省掉绝大部分重复时间。
 
 更完整的 prompt 模板、demo 链接文件和实操说明见 [docs/creator-batch-workflow.md](docs/creator-batch-workflow.md)。
+
+## Open Source
+
+本项目当前采用 [MIT License](LICENSE)。
+
+如果你准备对外发布自己的实例，建议：
+
+- 把服务定位为个人或团队内部工具，而不是公开大规模下载站
+- 不要把真实 API Key、cookies.txt 或浏览器 profile 路径提交到仓库
+- 把 `.env`、容器挂载目录和 Cookies 管理写成你的部署规范
 更完整的 CLI 说明见 [docs/cli.md](docs/cli.md)。
 
 ## 视频知识库链路
