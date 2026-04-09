@@ -1,8 +1,11 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from contextlib import contextmanager
 import json
+import os
 import shutil
+import threading
 import uuid
 from pathlib import Path
 
@@ -96,13 +99,367 @@ def _collect_url_inputs(
 
 
 def _write_result_file(results: list[dict], result_file: Path | None) -> None:
+    _write_result_file_with_history(results, result_file)
+
+
+def _write_result_file_with_history(
+    results: list[dict],
+    result_file: Path | None,
+    *,
+    previous_results: list[dict] | None = None,
+) -> None:
     if result_file is None:
         return
     result_file = result_file.expanduser().resolve()
     result_file.parent.mkdir(parents=True, exist_ok=True)
-    result_file.write_text(
-        json.dumps({"results": results}, ensure_ascii=False, indent=2) + "\n",
+    payload_results = _merge_results_for_checkpoint(previous_results or [], results)
+    _write_result_payload(result_file, payload_results)
+
+
+def _write_result_payload(result_file: Path, payload_results: list[dict]) -> None:
+    temp_path = result_file.with_name(f".{result_file.name}.{uuid.uuid4().hex}.tmp")
+    temp_path.write_text(
+        json.dumps({"results": payload_results}, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
+    )
+    temp_path.replace(result_file)
+
+
+def _result_identity(record: dict) -> str | None:
+    for key in ("input_path", "target", "source_url", "download_path", "transcript_path", "artifact_dir", "id"):
+        value = record.get(key)
+        if value:
+            return str(value)
+    return None
+
+
+def _merge_results_for_checkpoint(previous_results: list[dict], current_results: list[dict]) -> list[dict]:
+    merged = [dict(record) for record in previous_results]
+    index_by_key: dict[str, int] = {}
+
+    for index, record in enumerate(merged):
+        identity = _result_identity(record)
+        if identity:
+            index_by_key[identity] = index
+
+    for record in current_results:
+        identity = _result_identity(record)
+        if identity and identity in index_by_key:
+            merged[index_by_key[identity]] = dict(record)
+            continue
+        merged.append(dict(record))
+        if identity:
+            index_by_key[identity] = len(merged) - 1
+
+    return merged
+
+
+def _load_result_file_records(result_file: Path | None) -> list[dict]:
+    if result_file is None:
+        return []
+
+    resolved = result_file.expanduser().resolve()
+    if not resolved.exists():
+        return []
+
+    try:
+        payload = json.loads(resolved.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise click.ClickException(f"结果文件不是合法 JSON：{resolved}") from exc
+
+    records = payload.get("results")
+    if not isinstance(records, list):
+        raise click.ClickException(f"结果文件缺少 results 列表：{resolved}")
+    return [record for record in records if isinstance(record, dict)]
+
+
+class _CheckpointWriter:
+    def __init__(
+        self,
+        result_file: Path | None,
+        *,
+        previous_results: list[dict] | None = None,
+    ) -> None:
+        self._result_file = result_file.expanduser().resolve() if result_file is not None else None
+        self._lock = threading.Lock()
+        self._results = _merge_results_for_checkpoint(previous_results or [], [])
+
+    def record(self, record: dict) -> None:
+        if self._result_file is None:
+            return
+        with self._lock:
+            self._results = _merge_results_for_checkpoint(self._results, [record])
+            _write_result_payload(self._result_file, self._results)
+
+    def flush(self, results: list[dict]) -> None:
+        if self._result_file is None:
+            return
+        with self._lock:
+            self._results = _merge_results_for_checkpoint(self._results, results)
+            _write_result_payload(self._result_file, self._results)
+
+
+def _is_successful_checkpoint_record(record: dict) -> bool:
+    status = str(record.get("status") or "")
+    return not record.get("error") and not status.startswith("Failed")
+
+
+def _mark_resumed_record(record: dict) -> dict:
+    resumed = dict(record)
+    resumed["status"] = "Skipped · resumed from checkpoint"
+    resumed["resumed"] = True
+    resumed["done"] = True
+    return resumed
+
+
+def _mark_existing_record(record: dict) -> dict:
+    existing = dict(record)
+    existing["status"] = (
+        "Skipped · existing knowledge"
+        if existing.get("knowledge_path")
+        else "Skipped · existing transcript"
+    )
+    existing["reused_existing"] = True
+    existing["done"] = True
+    return existing
+
+
+def _record_satisfies_stage(record: dict, stage: str | None) -> bool:
+    if stage is None:
+        return True
+    if stage == "download":
+        return bool(record.get("download_path"))
+    if stage == "transcript":
+        return bool(record.get("transcript_path") or record.get("markdown_path") or record.get("artifact_dir"))
+    if stage == "knowledge":
+        return bool(record.get("knowledge_path") or record.get("knowledge_exists"))
+    raise ValueError(f"Unsupported checkpoint stage: {stage}")
+
+
+def _split_pending_inputs(
+    items: tuple[str, ...],
+    *,
+    previous_results: list[dict],
+    required_stage: str | None = None,
+) -> tuple[tuple[str, ...], list[dict], list[dict]]:
+    completed_by_key = {
+        identity: record
+        for record in previous_results
+        if _is_successful_checkpoint_record(record)
+        if (identity := _result_identity(record))
+    }
+
+    pending: list[str] = []
+    resumed_results: list[dict] = []
+    reusable_results: list[dict] = []
+    for item in items:
+        existing = completed_by_key.get(item)
+        if existing is not None and _record_satisfies_stage(existing, required_stage):
+            resumed_results.append(_mark_resumed_record(existing))
+            continue
+        if existing is not None and required_stage == "knowledge" and _record_satisfies_stage(existing, "transcript"):
+            reusable_results.append(dict(existing))
+            continue
+        pending.append(item)
+
+    return tuple(pending), resumed_results, reusable_results
+
+
+def _order_results_by_inputs(items: tuple[str, ...], results: list[dict]) -> list[dict]:
+    by_key = {
+        identity: dict(record)
+        for record in results
+        if (identity := _result_identity(record))
+    }
+    ordered: list[dict] = []
+    seen: set[str] = set()
+
+    for item in items:
+        record = by_key.get(item)
+        if record is None:
+            continue
+        ordered.append(record)
+        seen.add(item)
+
+    for identity, record in by_key.items():
+        if identity in seen:
+            continue
+        ordered.append(record)
+
+    return ordered
+
+
+def _resolve_job_count(requested_jobs: int, total: int, *, cap: int = 4) -> int:
+    if total <= 1:
+        return 1
+    if requested_jobs > 0:
+        return max(1, min(requested_jobs, total))
+    auto = os.cpu_count() or 1
+    return max(1, min(cap, total, auto))
+
+
+def _run_parallel_map(items: list, *, jobs: int, worker, on_result=None):
+    if jobs <= 1 or len(items) <= 1:
+        results = []
+        for item in items:
+            result = worker(item)
+            results.append(result)
+            if on_result is not None:
+                on_result(result)
+        return results
+
+    ordered_results: list[dict | None] = [None] * len(items)
+    with ThreadPoolExecutor(max_workers=jobs) as executor:
+        future_to_index = {
+            executor.submit(worker, item): index for index, item in enumerate(items)
+        }
+        for future in as_completed(future_to_index):
+            index = future_to_index[future]
+            result = future.result()
+            ordered_results[index] = result
+            if on_result is not None:
+                on_result(result)
+
+    return [result for result in ordered_results if result is not None]
+
+
+def _load_json_if_exists(path: Path) -> dict | None:
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+
+
+def _build_existing_transcript_record(meta_path: Path) -> dict | None:
+    metadata = _load_json_if_exists(meta_path)
+    if not metadata:
+        return None
+
+    source_url = str(metadata.get("source_url") or "").strip()
+    if not source_url:
+        return None
+
+    artifact_base = metadata.get("artifact_base_path") or metadata.get("audio_path")
+    if artifact_base:
+        base_path = Path(artifact_base).expanduser().resolve()
+    else:
+        suffix = " - 转写信息.json"
+        stem = meta_path.name[: -len(suffix)] if meta_path.name.endswith(suffix) else meta_path.stem
+        base_path = meta_path.with_name(f"{stem}.mp3").resolve()
+    artifact_paths = web_app.build_artifact_paths(base_path)
+    markdown_path = artifact_paths["markdown_path"]
+    if not markdown_path.exists():
+        return None
+
+    knowledge_path = artifact_paths["knowledge_path"] if artifact_paths["knowledge_path"].exists() else None
+    download_path = metadata.get("audio_path")
+    title = metadata.get("title") or base_path.stem
+    return {
+        "source_url": source_url,
+        "title": title,
+        "status": "Done · knowledge ready" if knowledge_path else "Done · transcript ready",
+        "done": True,
+        "error": None,
+        "artifact_dir": str(markdown_path.parent),
+        "download_path": download_path,
+        "transcript_path": str(markdown_path),
+        "knowledge_path": str(knowledge_path) if knowledge_path else None,
+        "knowledge_exists": bool(knowledge_path),
+        "provider": metadata.get("provider"),
+        "transcript_route": metadata.get("transcript_route"),
+    }
+
+
+def _index_existing_transcripts_by_source_url() -> dict[str, dict]:
+    download_dir = Path(web_app.DOWNLOAD_DIR).expanduser().resolve()
+    if not download_dir.exists():
+        return {}
+
+    records: dict[str, dict] = {}
+    meta_paths = sorted(
+        download_dir.glob("**/* - 转写信息.json"),
+        key=lambda path: path.stat().st_mtime,
+        reverse=True,
+    )
+    for meta_path in meta_paths:
+        record = _build_existing_transcript_record(meta_path)
+        if record is None:
+            continue
+        source_url = record["source_url"]
+        if source_url in records:
+            continue
+        records[source_url] = record
+    return records
+
+
+def _split_pending_urls_with_existing_artifacts(
+    urls: tuple[str, ...],
+    *,
+    required_stage: str | None,
+) -> tuple[tuple[str, ...], list[dict], list[dict]]:
+    existing_records = list(_index_existing_transcripts_by_source_url().values())
+    pending_urls, reused_results, reusable_results = _split_pending_inputs(
+        urls,
+        previous_results=existing_records,
+        required_stage=required_stage,
+    )
+    return (
+        pending_urls,
+        [_mark_existing_record(record) for record in reused_results],
+        [dict(record) for record in reusable_results],
+    )
+
+
+def _build_existing_audio_record(audio_path: Path) -> dict | None:
+    resolved = audio_path.expanduser().resolve()
+    artifact_paths = web_app.build_artifact_paths(resolved)
+    article_ready = artifact_paths["article_path"].exists() or not web_app.ENABLE_ARTICLE_DRAFT
+    if not (
+        artifact_paths["raw_path"].exists()
+        and artifact_paths["markdown_path"].exists()
+        and artifact_paths["meta_path"].exists()
+        and article_ready
+    ):
+        return None
+
+    metadata = _load_json_if_exists(artifact_paths["meta_path"]) or {}
+    knowledge_path = artifact_paths["knowledge_path"] if artifact_paths["knowledge_path"].exists() else None
+    return {
+        "input_path": str(resolved),
+        "title": metadata.get("title") or resolved.stem,
+        "status": "Done · knowledge ready" if knowledge_path else "Done · transcript ready",
+        "done": True,
+        "error": None,
+        "artifact_dir": str(artifact_paths["markdown_path"].parent),
+        "download_path": str(resolved),
+        "transcript_path": str(artifact_paths["markdown_path"]),
+        "knowledge_path": str(knowledge_path) if knowledge_path else None,
+        "knowledge_exists": bool(knowledge_path),
+        "provider": metadata.get("provider"),
+        "transcript_route": metadata.get("transcript_route"),
+        "source_url": metadata.get("source_url"),
+    }
+
+
+def _split_pending_audio_paths_with_existing_artifacts(
+    audio_paths: tuple[str, ...],
+    *,
+    required_stage: str | None,
+) -> tuple[tuple[str, ...], list[dict], list[dict]]:
+    existing_records = [
+        record
+        for path in audio_paths
+        if (record := _build_existing_audio_record(Path(path))) is not None
+    ]
+    pending_paths, reused_results, reusable_results = _split_pending_inputs(
+        audio_paths,
+        previous_results=existing_records,
+        required_stage=required_stage,
+    )
+    return (
+        pending_paths,
+        [_mark_existing_record(record) for record in reused_results],
+        [dict(record) for record in reusable_results],
     )
 
 
@@ -268,9 +625,10 @@ def _run_download_jobs(
     preset: str,
     use_cookies: bool,
     generate_transcript: bool,
+    jobs: int = 1,
+    on_result=None,
 ) -> list[dict]:
-    results: list[dict] = []
-    for url in urls:
+    def run_single(url: str) -> dict:
         job = web_app.Job(
             job_id=uuid.uuid4().hex,
             url=url,
@@ -279,8 +637,14 @@ def _run_download_jobs(
             generate_transcript=generate_transcript,
         )
         web_app.run_job(job)
-        results.append(_job_summary(job))
-    return results
+        return _job_summary(job)
+
+    return _run_parallel_map(
+        list(urls),
+        jobs=_resolve_job_count(jobs, len(urls), cap=6),
+        worker=run_single,
+        on_result=on_result,
+    )
 
 
 def _run_local_audio_jobs(
@@ -289,12 +653,13 @@ def _run_local_audio_jobs(
     source_url: str | None,
     title: str | None,
     copy_to_dir: Path | None,
+    jobs: int = 1,
+    on_result=None,
 ) -> list[dict]:
     if title and len(audio_files) != 1:
         raise click.ClickException("--title 只适用于单个音频文件。")
 
-    results: list[dict] = []
-    for audio_file in audio_files:
+    def run_single(audio_file: Path) -> dict:
         resolved = audio_file.expanduser().resolve()
         if not resolved.exists():
             raise click.ClickException(f"音频文件不存在：{resolved}")
@@ -326,9 +691,16 @@ def _run_local_audio_jobs(
             job.status = "Failed"
             job.error = str(exc)
 
-        results.append(_job_summary(job))
+        result = _job_summary(job)
+        result["input_path"] = str(resolved)
+        return result
 
-    return results
+    return _run_parallel_map(
+        list(audio_files),
+        jobs=_resolve_job_count(jobs, len(audio_files), cap=4),
+        worker=run_single,
+        on_result=on_result,
+    )
 
 
 def _knowledge_target_from_result(result: dict) -> Path | None:
@@ -343,6 +715,8 @@ def _attach_knowledge_results(
     results: list[dict],
     *,
     overwrite: bool,
+    jobs: int = 1,
+    on_result=None,
 ) -> list[dict]:
     targets: list[Path] = []
     seen: set[str] = set()
@@ -362,7 +736,12 @@ def _attach_knowledge_results(
     if not targets:
         return results
 
-    knowledge_results = _run_knowledge_jobs(targets=tuple(targets), overwrite=overwrite)
+    knowledge_results = _run_knowledge_jobs(
+        targets=tuple(targets),
+        overwrite=overwrite,
+        jobs=jobs,
+        on_result=on_result,
+    )
     knowledge_by_target = {record["target"]: record for record in knowledge_results}
 
     merged_results: list[dict] = []
@@ -528,10 +907,10 @@ def _run_knowledge_jobs(
     *,
     targets: tuple[Path, ...],
     overwrite: bool,
+    jobs: int = 1,
+    on_result=None,
 ) -> list[dict]:
-    results: list[dict] = []
-
-    for target in targets:
+    def run_single(target: Path) -> dict:
         resolved_target = str(target.expanduser().resolve())
         try:
             artifact_paths = _artifact_paths_from_target(target)
@@ -540,20 +919,17 @@ def _run_knowledge_jobs(
             knowledge_path = artifact_paths["knowledge_path"]
 
             if knowledge_path.exists() and not overwrite:
-                results.append(
-                    {
-                        "target": resolved_target,
-                        "status": "Skipped",
-                        "knowledge_path": str(knowledge_path),
-                        "artifact_dir": str(knowledge_path.parent),
-                        "title": metadata.get("title") or artifact_base_path.stem,
-                        "error": None,
-                        "knowledge_exists": True,
-                        "provider": metadata.get("knowledge_provider"),
-                        "model": metadata.get("knowledge_model"),
-                    }
-                )
-                continue
+                return {
+                    "target": resolved_target,
+                    "status": "Skipped",
+                    "knowledge_path": str(knowledge_path),
+                    "artifact_dir": str(knowledge_path.parent),
+                    "title": metadata.get("title") or artifact_base_path.stem,
+                    "error": None,
+                    "knowledge_exists": True,
+                    "provider": metadata.get("knowledge_provider"),
+                    "model": metadata.get("knowledge_model"),
+                }
 
             source_text = _build_knowledge_source_text(artifact_paths)
             title = metadata.get("title") or artifact_base_path.stem
@@ -580,35 +956,36 @@ def _run_knowledge_jobs(
                 encoding="utf-8",
             )
 
-            results.append(
-                {
-                    "target": resolved_target,
-                    "status": "Done",
-                    "knowledge_path": str(knowledge_path),
-                    "artifact_dir": str(knowledge_path.parent),
-                    "title": title,
-                    "error": None,
-                    "knowledge_exists": True,
-                    "provider": knowledge_result["provider"],
-                    "model": knowledge_result["model"],
-                }
-            )
+            return {
+                "target": resolved_target,
+                "status": "Done",
+                "knowledge_path": str(knowledge_path),
+                "artifact_dir": str(knowledge_path.parent),
+                "title": title,
+                "error": None,
+                "knowledge_exists": True,
+                "provider": knowledge_result["provider"],
+                "model": knowledge_result["model"],
+            }
         except Exception as exc:
-            results.append(
-                {
-                    "target": resolved_target,
-                    "status": "Failed",
-                    "knowledge_path": None,
-                    "artifact_dir": None,
-                    "title": Path(resolved_target).stem,
-                    "error": str(exc),
-                    "knowledge_exists": False,
-                    "provider": None,
-                    "model": None,
-                }
-            )
+            return {
+                "target": resolved_target,
+                "status": "Failed",
+                "knowledge_path": None,
+                "artifact_dir": None,
+                "title": Path(resolved_target).stem,
+                "error": str(exc),
+                "knowledge_exists": False,
+                "provider": None,
+                "model": None,
+            }
 
-    return results
+    return _run_parallel_map(
+        list(targets),
+        jobs=_resolve_job_count(jobs, len(targets), cap=4),
+        worker=run_single,
+        on_result=on_result,
+    )
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -684,6 +1061,8 @@ def main() -> None:
     type=click.Path(path_type=Path, dir_okay=False),
     help="把结果 JSON 额外写入文件。",
 )
+@click.option("--jobs", type=int, default=0, show_default=True, help="批量并发任务数，0 表示自动。")
+@click.option("--resume/--no-resume", default=True, help="优先复用 checkpoint 与已有逐字稿产物，减少重复处理。")
 @click.option("--language", help="覆盖本次转写语言提示，例如 zh、en、auto。")
 @click.option("--bitrate", help="覆盖本次转写前音频压缩码率，例如 48k。")
 @click.option("--transcription-model", help="覆盖本次 OpenRouter 音频模型。")
@@ -735,6 +1114,8 @@ def capture_command(
     output_mode: str,
     as_json: bool,
     result_file: Path | None,
+    jobs: int,
+    resume: bool,
     language: str | None,
     bitrate: str | None,
     transcription_model: str | None,
@@ -757,6 +1138,17 @@ def capture_command(
         stdin_enabled=stdin_enabled,
     )
     final_output_mode = _normalize_output_mode(output_mode, as_json)
+    previous_results = _load_result_file_records(result_file) if resume else []
+    required_stage = "knowledge" if knowledge else "transcript"
+    pending_urls, resumed_results, reusable_checkpoint_results = _split_pending_inputs(
+        resolved_urls,
+        previous_results=previous_results,
+        required_stage=required_stage,
+    )
+    checkpoint_writer = _CheckpointWriter(
+        result_file,
+        previous_results=previous_results if resume else None,
+    )
     with _runtime_overrides(
         output_dir=output_dir,
         cookies_path=cookies_path,
@@ -782,25 +1174,47 @@ def capture_command(
         article_prompt_file=article_prompt_file if article_prompt_file else _UNSET,
         knowledge_prompt_file=knowledge_prompt_file if knowledge_prompt_file else _UNSET,
     ):
-        results = _run_download_jobs(
-            urls=resolved_urls,
-            preset=DEFAULT_TRANSCRIPT_PRESET,
-            use_cookies=(
-                cookies
-                or cookies_path is not None
-                or bool(cookies_from_browser)
-                or youtube_cookies_path is not None
-                or bool(youtube_cookies_from_browser)
-                or bilibili_cookies_path is not None
-                or bool(bilibili_cookies_from_browser)
-                or douyin_cookies_path is not None
-                or bool(douyin_cookies_from_browser)
-            ),
-            generate_transcript=True,
+        reused_existing_results: list[dict] = []
+        reusable_existing_results: list[dict] = []
+        if resume:
+            pending_urls, reused_existing_results, reusable_existing_results = _split_pending_urls_with_existing_artifacts(
+                pending_urls,
+                required_stage=required_stage,
+            )
+        checkpoint_writer.flush(resumed_results + reused_existing_results)
+        fresh_results = (
+            _run_download_jobs(
+                urls=pending_urls,
+                preset=DEFAULT_TRANSCRIPT_PRESET,
+                use_cookies=(
+                    cookies
+                    or cookies_path is not None
+                    or bool(cookies_from_browser)
+                    or youtube_cookies_path is not None
+                    or bool(youtube_cookies_from_browser)
+                    or bilibili_cookies_path is not None
+                    or bool(bilibili_cookies_from_browser)
+                    or douyin_cookies_path is not None
+                    or bool(douyin_cookies_from_browser)
+                ),
+                generate_transcript=True,
+                jobs=jobs,
+                on_result=checkpoint_writer.record,
+            )
+            if pending_urls
+            else []
+        )
+        results = _order_results_by_inputs(
+            resolved_urls,
+            resumed_results
+            + reused_existing_results
+            + reusable_checkpoint_results
+            + reusable_existing_results
+            + fresh_results,
         )
         if knowledge:
-            results = _attach_knowledge_results(results, overwrite=overwrite_knowledge)
-    _write_result_file(results, result_file)
+            results = _attach_knowledge_results(results, overwrite=overwrite_knowledge, jobs=jobs)
+    checkpoint_writer.flush(results)
     _emit_results(results, final_output_mode)
     _exit_for_failures(results)
 
@@ -885,6 +1299,8 @@ def capture_command(
     type=click.Path(path_type=Path, dir_okay=False),
     help="把结果 JSON 额外写入文件。",
 )
+@click.option("--jobs", type=int, default=0, show_default=True, help="批量并发任务数，0 表示自动。")
+@click.option("--resume/--no-resume", default=True, help="优先复用 checkpoint 与已有逐字稿产物，减少重复处理。")
 @click.option("--language", help="覆盖本次转写语言提示，例如 zh、en、auto。")
 @click.option("--bitrate", help="覆盖本次转写前音频压缩码率，例如 48k。")
 @click.option("--transcription-model", help="覆盖本次 OpenRouter 音频模型。")
@@ -938,6 +1354,8 @@ def download_command(
     output_mode: str,
     as_json: bool,
     result_file: Path | None,
+    jobs: int,
+    resume: bool,
     language: str | None,
     bitrate: str | None,
     transcription_model: str | None,
@@ -965,6 +1383,17 @@ def download_command(
         stdin_enabled=stdin_enabled,
     )
     final_output_mode = _normalize_output_mode(output_mode, as_json)
+    previous_results = _load_result_file_records(result_file) if resume else []
+    required_stage = "knowledge" if knowledge else "transcript" if transcript else "download"
+    pending_urls, resumed_results, reusable_checkpoint_results = _split_pending_inputs(
+        resolved_urls,
+        previous_results=previous_results,
+        required_stage=required_stage,
+    )
+    checkpoint_writer = _CheckpointWriter(
+        result_file,
+        previous_results=previous_results if resume else None,
+    )
     with _runtime_overrides(
         output_dir=output_dir,
         cookies_path=cookies_path,
@@ -990,25 +1419,47 @@ def download_command(
         article_prompt_file=article_prompt_file if article_prompt_file else _UNSET,
         knowledge_prompt_file=knowledge_prompt_file if knowledge_prompt_file else _UNSET,
     ):
-        results = _run_download_jobs(
-            urls=resolved_urls,
-            preset=preset,
-            use_cookies=(
-                cookies
-                or cookies_path is not None
-                or bool(cookies_from_browser)
-                or youtube_cookies_path is not None
-                or bool(youtube_cookies_from_browser)
-                or bilibili_cookies_path is not None
-                or bool(bilibili_cookies_from_browser)
-                or douyin_cookies_path is not None
-                or bool(douyin_cookies_from_browser)
-            ),
-            generate_transcript=transcript,
+        reused_existing_results: list[dict] = []
+        reusable_existing_results: list[dict] = []
+        if resume and transcript:
+            pending_urls, reused_existing_results, reusable_existing_results = _split_pending_urls_with_existing_artifacts(
+                pending_urls,
+                required_stage=required_stage,
+            )
+        checkpoint_writer.flush(resumed_results + reused_existing_results)
+        fresh_results = (
+            _run_download_jobs(
+                urls=pending_urls,
+                preset=preset,
+                use_cookies=(
+                    cookies
+                    or cookies_path is not None
+                    or bool(cookies_from_browser)
+                    or youtube_cookies_path is not None
+                    or bool(youtube_cookies_from_browser)
+                    or bilibili_cookies_path is not None
+                    or bool(bilibili_cookies_from_browser)
+                    or douyin_cookies_path is not None
+                    or bool(douyin_cookies_from_browser)
+                ),
+                generate_transcript=transcript,
+                jobs=jobs,
+                on_result=checkpoint_writer.record,
+            )
+            if pending_urls
+            else []
+        )
+        results = _order_results_by_inputs(
+            resolved_urls,
+            resumed_results
+            + reused_existing_results
+            + reusable_checkpoint_results
+            + reusable_existing_results
+            + fresh_results,
         )
         if knowledge:
-            results = _attach_knowledge_results(results, overwrite=overwrite_knowledge)
-    _write_result_file(results, result_file)
+            results = _attach_knowledge_results(results, overwrite=overwrite_knowledge, jobs=jobs)
+    checkpoint_writer.flush(results)
     _emit_results(results, final_output_mode)
     _exit_for_failures(results)
 
@@ -1042,6 +1493,8 @@ def download_command(
     type=click.Path(path_type=Path, dir_okay=False),
     help="把结果 JSON 额外写入文件。",
 )
+@click.option("--jobs", type=int, default=0, show_default=True, help="批量并发任务数，0 表示自动。")
+@click.option("--resume/--no-resume", default=True, help="优先复用 checkpoint 与已有逐字稿产物，减少重复处理。")
 @click.option("--language", help="覆盖本次转写语言提示，例如 zh、en、auto。")
 @click.option("--bitrate", help="覆盖本次转写前音频压缩码率，例如 48k。")
 @click.option("--transcription-model", help="覆盖本次 OpenRouter 音频模型。")
@@ -1086,6 +1539,8 @@ def audio_command(
     output_mode: str,
     as_json: bool,
     result_file: Path | None,
+    jobs: int,
+    resume: bool,
     language: str | None,
     bitrate: str | None,
     transcription_model: str | None,
@@ -1108,7 +1563,19 @@ def audio_command(
         stdin_enabled=stdin_enabled,
         label="音频路径",
     )
+    resolved_input_paths = tuple(str(Path(path).expanduser().resolve()) for path in raw_paths)
     final_output_mode = _normalize_output_mode(output_mode, as_json)
+    previous_results = _load_result_file_records(result_file) if resume else []
+    required_stage = "knowledge" if knowledge else "transcript"
+    pending_paths, resumed_results, reusable_checkpoint_results = _split_pending_inputs(
+        resolved_input_paths,
+        previous_results=previous_results,
+        required_stage=required_stage,
+    )
+    checkpoint_writer = _CheckpointWriter(
+        result_file,
+        previous_results=previous_results if resume else None,
+    )
     with _runtime_overrides(
         transcription_model=transcription_model if transcription_model else _UNSET,
         cleanup_model=cleanup_model if cleanup_model else _UNSET,
@@ -1125,15 +1592,37 @@ def audio_command(
         article_prompt_file=article_prompt_file if article_prompt_file else _UNSET,
         knowledge_prompt_file=knowledge_prompt_file if knowledge_prompt_file else _UNSET,
     ):
-        results = _run_local_audio_jobs(
-            audio_files=tuple(Path(path) for path in raw_paths),
-            source_url=source_url,
-            title=title,
-            copy_to_dir=copy_to_dir.expanduser().resolve() if copy_to_dir else None,
+        reused_existing_results: list[dict] = []
+        reusable_existing_results: list[dict] = []
+        if resume:
+            pending_paths, reused_existing_results, reusable_existing_results = _split_pending_audio_paths_with_existing_artifacts(
+                pending_paths,
+                required_stage=required_stage,
+            )
+        checkpoint_writer.flush(resumed_results + reused_existing_results)
+        fresh_results = (
+            _run_local_audio_jobs(
+                audio_files=tuple(Path(path) for path in pending_paths),
+                source_url=source_url,
+                title=title,
+                copy_to_dir=copy_to_dir.expanduser().resolve() if copy_to_dir else None,
+                jobs=jobs,
+                on_result=checkpoint_writer.record,
+            )
+            if pending_paths
+            else []
+        )
+        results = _order_results_by_inputs(
+            resolved_input_paths,
+            resumed_results
+            + reused_existing_results
+            + reusable_checkpoint_results
+            + reusable_existing_results
+            + fresh_results,
         )
         if knowledge:
-            results = _attach_knowledge_results(results, overwrite=overwrite_knowledge)
-    _write_result_file(results, result_file)
+            results = _attach_knowledge_results(results, overwrite=overwrite_knowledge, jobs=jobs)
+    checkpoint_writer.flush(results)
     _emit_results(results, final_output_mode)
     _exit_for_failures(results)
 
@@ -1282,6 +1771,8 @@ def artifacts_command(
     type=click.Path(path_type=Path, dir_okay=False),
     help="把结果 JSON 额外写入文件。",
 )
+@click.option("--jobs", type=int, default=0, show_default=True, help="批量并发任务数，0 表示自动。")
+@click.option("--resume/--no-resume", default=True, help="优先复用 checkpoint，避免重复整理知识库。")
 @click.option(
     "--model",
     "knowledge_model",
@@ -1305,6 +1796,8 @@ def knowledge_command(
     output_mode: str,
     as_json: bool,
     result_file: Path | None,
+    jobs: int,
+    resume: bool,
     knowledge_model: str | None,
     knowledge_prompt_file: Path | None,
     overwrite: bool,
@@ -1317,16 +1810,35 @@ def knowledge_command(
         label="逐字稿路径",
     )
     final_output_mode = _normalize_output_mode(output_mode, as_json)
+    resolved_target_paths = tuple(str(Path(target).expanduser().resolve()) for target in resolved_targets)
+    previous_results = _load_result_file_records(result_file) if resume else []
+    pending_targets, resumed_results, reusable_results = _split_pending_inputs(
+        resolved_target_paths,
+        previous_results=previous_results,
+        required_stage="knowledge",
+    )
+    checkpoint_writer = _CheckpointWriter(
+        result_file,
+        previous_results=previous_results if resume else None,
+    )
     with _runtime_overrides(
         knowledge_model=knowledge_model if knowledge_model else _UNSET,
         knowledge_prompt_file=knowledge_prompt_file if knowledge_prompt_file else _UNSET,
     ):
-        results = _run_knowledge_jobs(
-            targets=tuple(Path(target) for target in resolved_targets),
-            overwrite=overwrite,
+        checkpoint_writer.flush(resumed_results)
+        fresh_results = (
+            _run_knowledge_jobs(
+                targets=tuple(Path(target) for target in pending_targets),
+                overwrite=overwrite,
+                jobs=jobs,
+                on_result=checkpoint_writer.record,
+            )
+            if pending_targets
+            else []
         )
+        results = _order_results_by_inputs(resolved_target_paths, resumed_results + reusable_results + fresh_results)
 
-    _write_result_file(results, result_file)
+    checkpoint_writer.flush(results)
     _emit_results(results, final_output_mode)
     _exit_for_failures(results)
 

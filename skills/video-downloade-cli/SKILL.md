@@ -34,14 +34,27 @@ video-downloade knowledge "/path/to/file.mp3" --json
 - 默认优先 `--json`
 - 只需要路径时，用 `--output paths`
 - 批量任务建议加 `--result-file`
+- 长批量任务默认搭配 `--resume`
 - 批量输入优先 `--input-file` 或 `--stdin`
 
 ## Batch examples
 
 ```bash
-video-downloade capture --input-file ./urls.txt --knowledge --result-file ./capture.json --json
+video-downloade capture \
+  --input-file ./urls.txt \
+  --knowledge \
+  --jobs 0 \
+  --resume \
+  --result-file ./capture.json \
+  --json
 cat ./urls.txt | video-downloade capture --stdin --output paths
 ```
+
+批量场景约定：
+
+- `--jobs 0`：自动并发
+- `--result-file`：每个条目完成即写 checkpoint
+- `--resume`：优先复用 checkpoint 和已有 sidecar，避免重复下载、重复转写
 
 ## Auth handling
 
@@ -54,6 +67,29 @@ video-downloade capture URL \
   --json
 ```
 
+推荐流程：
+
+1. 先执行 `video-downloade doctor --json`
+2. 检查 `youtube_auth_configured`、`bilibili_auth_configured`、`douyin_auth_configured`
+3. 优先用 `*_COOKIES_FROM_BROWSER`
+4. 浏览器方案不稳定时，再回退到 `*_COOKIES_PATH`
+
+## Pairing with web-access
+
+如果任务是“先从博主主页或系列页采链接，再批量整理知识库”，推荐与 [`web-access`](https://github.com/eze-is/web-access) 搭配：
+
+1. 让 `web-access` 把目标视频 URL 提取成 `./urls.txt`
+2. 再调用：
+
+```bash
+video-downloade capture \
+  --input-file ./urls.txt \
+  --knowledge \
+  --jobs 0 \
+  --resume \
+  --result-file ./runs/creator-series/capture.json \
+  --output paths
+```
 ## Useful runtime overrides
 
 ```bash

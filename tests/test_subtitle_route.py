@@ -166,6 +166,63 @@ class SubtitleParsingTests(unittest.TestCase):
 
 
 class TranscriptRoutingTests(unittest.TestCase):
+    def test_split_pending_inputs_skips_only_successful_checkpoint_records(self) -> None:
+        previous_results = [
+            {
+                "source_url": "https://example.com/a",
+                "status": "Done",
+                "error": None,
+            },
+            {
+                "source_url": "https://example.com/b",
+                "status": "Failed",
+                "error": "network error",
+            },
+        ]
+
+        pending, resumed, reusable = web_cli._split_pending_inputs(
+            ("https://example.com/a", "https://example.com/b", "https://example.com/c"),
+            previous_results=previous_results,
+        )
+
+        self.assertEqual(pending, ("https://example.com/b", "https://example.com/c"))
+        self.assertEqual(resumed[0]["source_url"], "https://example.com/a")
+        self.assertTrue(resumed[0]["resumed"])
+        self.assertEqual(reusable, [])
+
+    def test_split_pending_inputs_reuses_transcript_for_knowledge_stage(self) -> None:
+        previous_results = [
+            {
+                "source_url": "https://example.com/a",
+                "status": "Done · transcript ready",
+                "error": None,
+                "transcript_path": "/tmp/a - 逐字稿.md",
+                "artifact_dir": "/tmp/a",
+            }
+        ]
+
+        pending, resumed, reusable = web_cli._split_pending_inputs(
+            ("https://example.com/a",),
+            previous_results=previous_results,
+            required_stage="knowledge",
+        )
+
+        self.assertEqual(pending, ())
+        self.assertEqual(resumed, [])
+        self.assertEqual(reusable[0]["source_url"], "https://example.com/a")
+        self.assertEqual(reusable[0]["transcript_path"], "/tmp/a - 逐字稿.md")
+
+    def test_order_results_by_inputs_preserves_original_order(self) -> None:
+        ordered = web_cli._order_results_by_inputs(
+            ("b", "a"),
+            [
+                {"source_url": "a", "status": "Done"},
+                {"source_url": "b", "status": "Done"},
+            ],
+        )
+
+        self.assertEqual([record["source_url"] for record in ordered], ["b", "a"])
+
     def test_runtime_overrides_patch_platform_cookie_paths(self) -> None:
         original_youtube = web_app.YOUTUBE_COOKIES_PATH
         original_bilibili = web_app.BILIBILI_COOKIES_PATH
@@ -318,6 +375,186 @@ class TranscriptRoutingTests(unittest.TestCase):
         payload = json.loads(result.output)
         self.assertEqual(payload["results"][0]["status"], "Done · knowledge ready")
         self.assertTrue(payload["results"][0]["knowledge_path"].endswith("Sample - 知识库.md"))
+
+    def test_capture_command_resumes_from_result_file(self) -> None:
+        runner = CliRunner()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result_file = Path(temp_dir) / "capture.json"
+            result_file.write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "source_url": "https://example.com/a",
+                                "status": "Done",
+                                "error": None,
+                                "artifact_dir": "/tmp/a",
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                web_cli,
+                "_run_download_jobs",
+                return_value=[
+                    {
+                        "source_url": "https://example.com/b",
+                        "status": "Done · transcript ready",
+                        "error": None,
+                        "artifact_dir": "/tmp/b",
+                    }
+                ],
+            ) as run_download_jobs:
+                result = runner.invoke(
+                    web_cli.main,
+                    [
+                        "capture",
+                        "https://example.com/a",
+                        "https://example.com/b",
+                        "--json",
+                        "--result-file",
+                        str(result_file),
+                    ],
+                )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        run_download_jobs.assert_called_once()
+        self.assertEqual(run_download_jobs.call_args.kwargs["urls"], ("https://example.com/b",))
+        payload = json.loads(result.output)
+        self.assertEqual(payload["results"][0]["status"], "Skipped · resumed from checkpoint")
+        self.assertEqual(payload["results"][1]["source_url"], "https://example.com/b")
+
+    def test_capture_command_reuses_existing_artifacts_before_redownload(self) -> None:
+        runner = CliRunner()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base_path = Path(temp_dir) / "Sample [abc]" / "Sample [abc].mp3"
+            base_path.parent.mkdir(parents=True)
+            artifact_paths = web_app.build_artifact_paths(base_path)
+            artifact_paths["raw_path"].write_text("raw transcript\n", encoding="utf-8")
+            artifact_paths["markdown_path"].write_text("# Sample\n\n## 清洗稿\n\nclean transcript\n", encoding="utf-8")
+            artifact_paths["meta_path"].write_text(
+                json.dumps(
+                    {
+                        "artifact_base_path": str(base_path),
+                        "title": "Sample",
+                        "source_url": "https://example.com/video",
+                        "provider": "openrouter",
+                        "transcript_route": "audio_transcription",
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(web_cli, "_run_download_jobs") as run_download_jobs:
+                result = runner.invoke(
+                    web_cli.main,
+                    [
+                        "capture",
+                        "https://example.com/video",
+                        "--output-dir",
+                        temp_dir,
+                        "--json",
+                    ],
+                )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        run_download_jobs.assert_not_called()
+        payload = json.loads(result.output)
+        self.assertEqual(payload["results"][0]["status"], "Skipped · existing transcript")
+        self.assertEqual(
+            Path(payload["results"][0]["transcript_path"]).resolve(),
+            artifact_paths["markdown_path"].resolve(),
+        )
+
+    def test_capture_command_resumes_knowledge_from_checkpoint_without_redownload(self) -> None:
+        runner = CliRunner()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            transcript_path = Path(temp_dir) / "Sample - 逐字稿.md"
+            transcript_path.write_text("# Sample\n", encoding="utf-8")
+            result_file = Path(temp_dir) / "capture.json"
+            result_file.write_text(
+                json.dumps(
+                    {
+                        "results": [
+                            {
+                                "source_url": "https://example.com/video",
+                                "status": "Done · transcript ready",
+                                "error": None,
+                                "artifact_dir": temp_dir,
+                                "transcript_path": str(transcript_path),
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(web_cli, "_run_download_jobs") as run_download_jobs, mock.patch.object(
+                web_cli,
+                "_run_knowledge_jobs",
+                return_value=[
+                    {
+                        "target": str(transcript_path.resolve()),
+                        "status": "Done",
+                        "knowledge_path": str(Path(temp_dir) / "Sample - 知识库.md"),
+                        "artifact_dir": temp_dir,
+                        "title": "Sample",
+                        "error": None,
+                        "knowledge_exists": True,
+                        "provider": "zhipu-coding",
+                        "model": "GLM-4.5",
+                    }
+                ],
+            ):
+                result = runner.invoke(
+                    web_cli.main,
+                    [
+                        "capture",
+                        "https://example.com/video",
+                        "--knowledge",
+                        "--json",
+                        "--result-file",
+                        str(result_file),
+                    ],
+                )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        run_download_jobs.assert_not_called()
+        payload = json.loads(result.output)
+        self.assertEqual(payload["results"][0]["status"], "Done · knowledge ready")
+
+    def test_checkpoint_writer_records_partial_results(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result_file = Path(temp_dir) / "capture.json"
+            writer = web_cli._CheckpointWriter(result_file)
+
+            writer.record(
+                {
+                    "source_url": "https://example.com/video",
+                    "status": "Done · transcript ready",
+                    "error": None,
+                    "transcript_path": "/tmp/video - 逐字稿.md",
+                }
+            )
+
+            payload = json.loads(result_file.read_text(encoding="utf-8"))
+
+        self.assertEqual(payload["results"][0]["source_url"], "https://example.com/video")
 
     def test_download_command_requires_transcript_for_knowledge(self) -> None:
         runner = CliRunner()

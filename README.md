@@ -24,6 +24,8 @@
 - [docs/cli.md](docs/cli.md)：CLI、AI 集成、批量与知识库工作流
 - [docs/docker-deployment.md](docs/docker-deployment.md)：Docker 一键部署与容器内 CLI 用法
 - [docs/input-expansion-roadmap.md](docs/input-expansion-roadmap.md)：分享链接识别、多端入口和 APK 路线
+- [docs/creator-batch-workflow.md](docs/creator-batch-workflow.md)：搭配 `web-access` 批量抓取创作者视频并整理成知识库
+- [docs/open-source-launch.md](docs/open-source-launch.md)：开源发布文案与推文草稿
 - [skills/README.md](skills/README.md)：公开 skill 目录与安装方式
 
 > 当前更适合个人、本地或小范围自用，不建议直接作为公共下载站点大规模对外开放。
@@ -177,7 +179,13 @@ video-downloade capture "https://www.youtube.com/watch?v=..." \
   --json
 
 # 批量 URL：从文件或 stdin 输入
-video-downloade capture --input-file ./urls.txt --knowledge --result-file ./capture.json --json
+video-downloade capture \
+  --input-file ./urls.txt \
+  --knowledge \
+  --jobs 0 \
+  --resume \
+  --result-file ./capture.json \
+  --json
 cat ./urls.txt | video-downloade capture --stdin --output paths
 
 # 仅下载音频或视频，不生成逐字稿
@@ -213,7 +221,9 @@ video-downloade serve --port 8080
 
 - `--input-file` / `--stdin`：批量输入 URL 或音频路径
 - `--output text|json|paths`：切换输出格式，方便人类或 AI 消费
-- `--result-file`：把结果 JSON 落盘，便于后续自动化
+- `--result-file`：把结果 JSON 增量落盘，长批量任务中途打断后可直接续跑
+- `--jobs`：批量并发任务数，`0` 表示自动；URL 批量默认会自动拉高到更积极的并发档位
+- `--resume`：优先复用 checkpoint 和已有逐字稿 / 知识库产物，避免重复下载、重复转写
 - `--cookies-from-browser`：直接读取浏览器登录态
 - `--youtube-cookies-path` / `--youtube-cookies-from-browser`：只覆盖 YouTube 登录态
 - `--bilibili-cookies-path` / `--bilibili-cookies-from-browser`：只覆盖 Bilibili 登录态
@@ -223,6 +233,32 @@ video-downloade serve --port 8080
 - `--overwrite-knowledge`：覆盖已有 `xxx - 知识库.md`
 - `artifacts` 默认返回 metadata 摘要；加 `--full-metadata` 才返回完整 `转写信息.json`
 
+## Creator Batch Workflow
+
+如果你想把“某个博主的一组视频”直接整理成 Markdown 知识库，推荐把本仓库 skill 和 [`web-access`](https://github.com/eze-is/web-access) 组合起来用。
+
+推荐流程：
+
+1. 安装本仓库 skill：`./scripts/install-video-downloade-skill`
+2. 安装 [`web-access`](https://github.com/eze-is/web-access)：
+   `claude plugin marketplace add https://github.com/eze-is/web-access`
+   `claude plugin install web-access@web-access --scope user`
+3. 用 `web-access` 打开创作者主页、系列页或合集页，把目标视频链接提取到 `./urls.txt`
+4. 直接执行批量知识库命令：
+
+```bash
+video-downloade capture \
+  --input-file ./urls.txt \
+  --knowledge \
+  --jobs 0 \
+  --resume \
+  --result-file ./runs/creator-series/capture.json \
+  --output paths
+```
+
+`--result-file + --resume` 现在会按条目持续写 checkpoint；如果中途停掉，再跑同一条命令就会跳过已经完成的 URL，并优先复用下载目录里已有的逐字稿 sidecar。对长批量任务来说，重跑时通常能省掉绝大部分重复时间。
+
+更完整的 prompt 模板、demo 链接文件和实操说明见 [docs/creator-batch-workflow.md](docs/creator-batch-workflow.md)。
 更完整的 CLI 说明见 [docs/cli.md](docs/cli.md)。
 
 ## 视频知识库链路

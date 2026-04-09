@@ -34,7 +34,24 @@ video-downloade knowledge "/path/to/file.mp3" --json
 - 默认优先 `--json`，给 AI 最稳定
 - 只需要路径时，用 `--output paths`
 - 需要保存机器可读结果时，加 `--result-file`
+- 长批量任务默认搭配 `--resume`
 - 批量输入优先 `--input-file` 或 `--stdin`
+
+## Batch workflow
+
+```bash
+video-downloade capture \
+  --input-file ./urls.txt \
+  --knowledge \
+  --jobs 0 \
+  --resume \
+  --result-file ./capture.json \
+  --output paths
+```
+
+- `--jobs 0`：自动并发
+- `--result-file`：每个条目完成就会写 checkpoint
+- `--resume`：优先复用 checkpoint 和已有逐字稿 sidecar
 
 ## Useful runtime overrides
 
@@ -63,3 +80,4 @@ video-downloade audio FILE --cleanup-prompt-file ./角色提示词.md --article-
 - `artifacts` 默认只返回摘要 metadata；排障时再加 `--full-metadata`
 - 若仅需下载，不要额外开启逐字稿，以节省成本和时间
 - 知识库整理默认沿用 `ARTICLE_DRAFT_*` 这组配置；只有需要单独后端时再设置 `KNOWLEDGE_DRAFT_*`
+- 如果要先从创作者主页 / 系列页提取链接，推荐和 [`web-access`](https://github.com/eze-is/web-access) 搭配：先让它生成 `urls.txt`，再调上面的批量命令
