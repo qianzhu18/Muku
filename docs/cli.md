@@ -104,6 +104,7 @@ video-downloade capture URL \
 YOUTUBE_COOKIES_FROM_BROWSER=chrome
 YOUTUBE_COOKIES_PATH=/absolute/path/to/youtube.cookies.txt
 BILIBILI_COOKIES_PATH=/absolute/path/to/bilibili.cookies.txt
+DOUYIN_COOKIES_PATH=/absolute/path/to/douyin.cookies.txt
 ```
 
 ## 容器里调用 CLI

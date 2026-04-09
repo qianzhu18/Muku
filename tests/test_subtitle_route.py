@@ -15,6 +15,16 @@ class SubtitleParsingTests(unittest.TestCase):
         parsed = web_app.parse_cookies_from_browser_spec("chrome:Profile 1")
         self.assertEqual(parsed, ("chrome", "Profile 1", None, None))
 
+    def test_detect_platform_supports_douyin_web_and_share_urls(self) -> None:
+        self.assertEqual(
+            web_app.detect_platform("https://www.douyin.com/video/1234567890"),
+            "Douyin",
+        )
+        self.assertEqual(
+            web_app.detect_platform("https://v.douyin.com/iABCDE12/"),
+            "Douyin",
+        )
+
     def test_collect_url_inputs_accepts_bilibili_share_text(self) -> None:
         share_text = (
             "【SpaceX冲击史上最大IPO，马斯克想要的真的只是一家“公司”吗？】 "
@@ -48,6 +58,16 @@ class SubtitleParsingTests(unittest.TestCase):
             ],
         )
 
+    def test_collect_url_inputs_accepts_douyin_share_text(self) -> None:
+        share_text = (
+            "4.87 复制打开抖音，看看【千逐的作品】这是一个测试 https://v.douyin.com/iABCDE12/ "
+            "打开抖音搜索，直接观看视频！"
+        )
+
+        urls = web_app.collect_url_inputs(share_text)
+
+        self.assertEqual(urls, ["https://v.douyin.com/iABCDE12/"])
+
     def test_resolve_cookie_options_prefers_youtube_specific_browser_auth(self) -> None:
         with mock.patch.object(web_app, "YOUTUBE_COOKIES_FROM_BROWSER", "chrome"), mock.patch.object(
             web_app, "YOUTUBE_COOKIES_PATH", ""
@@ -55,6 +75,17 @@ class SubtitleParsingTests(unittest.TestCase):
             web_app, "COOKIES_PATH", "/tmp/bilibili.cookies.txt"
         ):
             options = web_app.resolve_cookie_options("https://www.youtube.com/watch?v=abcdefghijk")
+
+        self.assertEqual(options["cookiesfrombrowser"], ("chrome", None, None, None))
+        self.assertNotIn("cookiefile", options)
+
+    def test_resolve_cookie_options_prefers_douyin_specific_browser_auth(self) -> None:
+        with mock.patch.object(web_app, "DOUYIN_COOKIES_FROM_BROWSER", "chrome"), mock.patch.object(
+            web_app, "DOUYIN_COOKIES_PATH", ""
+        ), mock.patch.object(web_app, "COOKIES_FROM_BROWSER", ""), mock.patch.object(
+            web_app, "COOKIES_PATH", "/tmp/global.cookies.txt"
+        ):
+            options = web_app.resolve_cookie_options("https://www.douyin.com/video/1234567890")
 
         self.assertEqual(options["cookiesfrombrowser"], ("chrome", None, None, None))
         self.assertNotIn("cookiefile", options)
@@ -138,22 +169,28 @@ class TranscriptRoutingTests(unittest.TestCase):
     def test_runtime_overrides_patch_platform_cookie_paths(self) -> None:
         original_youtube = web_app.YOUTUBE_COOKIES_PATH
         original_bilibili = web_app.BILIBILI_COOKIES_PATH
+        original_douyin = web_app.DOUYIN_COOKIES_PATH
 
         with tempfile.TemporaryDirectory() as temp_dir:
             youtube_path = Path(temp_dir) / "youtube.cookies.txt"
             bilibili_path = Path(temp_dir) / "bilibili.cookies.txt"
+            douyin_path = Path(temp_dir) / "douyin.cookies.txt"
             youtube_path.write_text("youtube", encoding="utf-8")
             bilibili_path.write_text("bilibili", encoding="utf-8")
+            douyin_path.write_text("douyin", encoding="utf-8")
 
             with web_cli._runtime_overrides(
                 youtube_cookies_path=youtube_path,
                 bilibili_cookies_path=bilibili_path,
+                douyin_cookies_path=douyin_path,
             ):
                 self.assertEqual(web_app.YOUTUBE_COOKIES_PATH, str(youtube_path.resolve()))
                 self.assertEqual(web_app.BILIBILI_COOKIES_PATH, str(bilibili_path.resolve()))
+                self.assertEqual(web_app.DOUYIN_COOKIES_PATH, str(douyin_path.resolve()))
 
         self.assertEqual(web_app.YOUTUBE_COOKIES_PATH, original_youtube)
         self.assertEqual(web_app.BILIBILI_COOKIES_PATH, original_bilibili)
+        self.assertEqual(web_app.DOUYIN_COOKIES_PATH, original_douyin)
 
     def test_artifact_paths_from_directory_resolves_metadata(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -302,6 +339,7 @@ class TranscriptRoutingTests(unittest.TestCase):
         payload = json.loads(result.output)
         self.assertIn("knowledge_enabled", payload)
         self.assertIn("knowledge_capture_ready", payload)
+        self.assertIn("douyin_auth_configured", payload)
 
     def test_start_accepts_share_text_payload(self) -> None:
         share_text = (

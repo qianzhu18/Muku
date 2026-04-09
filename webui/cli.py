@@ -90,7 +90,7 @@ def _collect_url_inputs(
         seen.add(item)
 
     if not deduped:
-        raise click.ClickException("没有识别到可用链接。支持直接粘贴 URL，或粘贴 Bilibili / YouTube 分享文案。")
+        raise click.ClickException("没有识别到可用链接。支持直接粘贴 URL，或粘贴 Bilibili / YouTube / Douyin 分享文案。")
 
     return tuple(deduped)
 
@@ -181,6 +181,8 @@ def _runtime_overrides(
     youtube_cookies_from_browser: str | object = _UNSET,
     bilibili_cookies_path: Path | None = None,
     bilibili_cookies_from_browser: str | object = _UNSET,
+    douyin_cookies_path: Path | None = None,
+    douyin_cookies_from_browser: str | object = _UNSET,
     transcription_model: str | object = _UNSET,
     cleanup_model: str | object = _UNSET,
     article_model: str | object = _UNSET,
@@ -216,6 +218,9 @@ def _runtime_overrides(
     if bilibili_cookies_path is not None:
         patch(web_app, "BILIBILI_COOKIES_PATH", str(bilibili_cookies_path.expanduser().resolve()))
     patch(web_app, "BILIBILI_COOKIES_FROM_BROWSER", bilibili_cookies_from_browser)
+    if douyin_cookies_path is not None:
+        patch(web_app, "DOUYIN_COOKIES_PATH", str(douyin_cookies_path.expanduser().resolve()))
+    patch(web_app, "DOUYIN_COOKIES_FROM_BROWSER", douyin_cookies_from_browser)
 
     patch(web_app, "TRANSCRIPTION_LANGUAGE", language)
     patch(web_app, "TRANSCRIPTION_AUDIO_BITRATE", bitrate)
@@ -651,6 +656,15 @@ def main() -> None:
     help="直接从浏览器读取 Bilibili 登录态，例如 chrome、edge:Profile 1。",
 )
 @click.option(
+    "--douyin-cookies-path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="显式指定 Douyin cookies.txt 路径。",
+)
+@click.option(
+    "--douyin-cookies-from-browser",
+    help="直接从浏览器读取 Douyin 登录态，例如 chrome、edge:Profile 1。",
+)
+@click.option(
     "--output-dir",
     type=click.Path(path_type=Path, file_okay=False),
     help="下载和逐字稿输出目录。",
@@ -714,6 +728,8 @@ def capture_command(
     youtube_cookies_from_browser: str | None,
     bilibili_cookies_path: Path | None,
     bilibili_cookies_from_browser: str | None,
+    douyin_cookies_path: Path | None,
+    douyin_cookies_from_browser: str | None,
     output_dir: Path | None,
     output_mode: str,
     as_json: bool,
@@ -748,6 +764,8 @@ def capture_command(
         youtube_cookies_from_browser=youtube_cookies_from_browser if youtube_cookies_from_browser else _UNSET,
         bilibili_cookies_path=bilibili_cookies_path,
         bilibili_cookies_from_browser=bilibili_cookies_from_browser if bilibili_cookies_from_browser else _UNSET,
+        douyin_cookies_path=douyin_cookies_path,
+        douyin_cookies_from_browser=douyin_cookies_from_browser if douyin_cookies_from_browser else _UNSET,
         transcription_model=transcription_model if transcription_model else _UNSET,
         cleanup_model=cleanup_model if cleanup_model else _UNSET,
         article_model=article_model if article_model else _UNSET,
@@ -774,6 +792,8 @@ def capture_command(
                 or bool(youtube_cookies_from_browser)
                 or bilibili_cookies_path is not None
                 or bool(bilibili_cookies_from_browser)
+                or douyin_cookies_path is not None
+                or bool(douyin_cookies_from_browser)
             ),
             generate_transcript=True,
         )
@@ -835,6 +855,15 @@ def capture_command(
 @click.option(
     "--bilibili-cookies-from-browser",
     help="直接从浏览器读取 Bilibili 登录态，例如 chrome、edge:Profile 1。",
+)
+@click.option(
+    "--douyin-cookies-path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="显式指定 Douyin cookies.txt 路径。",
+)
+@click.option(
+    "--douyin-cookies-from-browser",
+    help="直接从浏览器读取 Douyin 登录态，例如 chrome、edge:Profile 1。",
 )
 @click.option(
     "--output-dir",
@@ -902,6 +931,8 @@ def download_command(
     youtube_cookies_from_browser: str | None,
     bilibili_cookies_path: Path | None,
     bilibili_cookies_from_browser: str | None,
+    douyin_cookies_path: Path | None,
+    douyin_cookies_from_browser: str | None,
     output_dir: Path | None,
     output_mode: str,
     as_json: bool,
@@ -941,6 +972,8 @@ def download_command(
         youtube_cookies_from_browser=youtube_cookies_from_browser if youtube_cookies_from_browser else _UNSET,
         bilibili_cookies_path=bilibili_cookies_path,
         bilibili_cookies_from_browser=bilibili_cookies_from_browser if bilibili_cookies_from_browser else _UNSET,
+        douyin_cookies_path=douyin_cookies_path,
+        douyin_cookies_from_browser=douyin_cookies_from_browser if douyin_cookies_from_browser else _UNSET,
         transcription_model=transcription_model if transcription_model else _UNSET,
         cleanup_model=cleanup_model if cleanup_model else _UNSET,
         article_model=article_model if article_model else _UNSET,
@@ -967,6 +1000,8 @@ def download_command(
                 or bool(youtube_cookies_from_browser)
                 or bilibili_cookies_path is not None
                 or bool(bilibili_cookies_from_browser)
+                or douyin_cookies_path is not None
+                or bool(douyin_cookies_from_browser)
             ),
             generate_transcript=transcript,
         )
@@ -1116,6 +1151,7 @@ def doctor_command(as_json: bool) -> None:
         "subtitle_auth_configured": subtitle_auth_configured,
         "youtube_auth_configured": web_app.platform_auth_configured("YouTube"),
         "bilibili_auth_configured": web_app.platform_auth_configured("Bilibili"),
+        "douyin_auth_configured": web_app.platform_auth_configured("Douyin"),
         "ytdlp_remote_components": list(web_app.YTDLP_REMOTE_COMPONENTS),
         "transcription_enabled": web_app.ENABLE_TRANSCRIPTION,
         "transcription_model": web_app.OPENROUTER_TRANSCRIPTION_MODEL,
@@ -1146,6 +1182,9 @@ def doctor_command(as_json: bool) -> None:
         "bilibili_cookies_path": web_app.BILIBILI_COOKIES_PATH or None,
         "bilibili_cookies_exists": bool(web_app.BILIBILI_COOKIES_PATH) and Path(web_app.BILIBILI_COOKIES_PATH).exists(),
         "bilibili_cookies_from_browser": web_app.BILIBILI_COOKIES_FROM_BROWSER or None,
+        "douyin_cookies_path": web_app.DOUYIN_COOKIES_PATH or None,
+        "douyin_cookies_exists": bool(web_app.DOUYIN_COOKIES_PATH) and Path(web_app.DOUYIN_COOKIES_PATH).exists(),
+        "douyin_cookies_from_browser": web_app.DOUYIN_COOKIES_FROM_BROWSER or None,
         "transcript_capture_ready": (
             shutil.which("yt-dlp") is not None
             and web_app.ENABLE_TRANSCRIPTION

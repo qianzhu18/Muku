@@ -72,6 +72,7 @@ Cookies 场景可在本地 `.env` 中配置：
 DOCKER_COOKIES_PATH=/cookies.txt
 DOCKER_YOUTUBE_COOKIES_PATH=/youtube.cookies.txt
 DOCKER_BILIBILI_COOKIES_PATH=/bilibili.cookies.txt
+DOCKER_DOUYIN_COOKIES_PATH=/douyin.cookies.txt
 ```
 
 然后把文件挂进容器：
@@ -128,13 +129,14 @@ python -m webui.cli --help
 - `ARTICLE_DRAFT_API_KEY`：解析稿必需
 - `YOUTUBE_COOKIES_FROM_BROWSER` / `YOUTUBE_COOKIES_PATH`：提升 YouTube 下载和字幕直提成功率
 - `BILIBILI_COOKIES_PATH` / `BILIBILI_COOKIES_FROM_BROWSER`：提升 B 站字幕直提成功率
+- `DOUYIN_COOKIES_PATH` / `DOUYIN_COOKIES_FROM_BROWSER`：为受限抖音内容预留平台级登录态
 - `YTDLP_REMOTE_COMPONENTS=ejs:github`：为部分受 JS challenge 保护的 YouTube 视频启用格式解析
 
 知识库整理默认会沿用 `ARTICLE_DRAFT_*` 这一组配置；如果你想给知识库链路单独指定模型或后端，可以在 `.env` 里额外设置 `KNOWLEDGE_DRAFT_*`。
 
 ## Web 使用方式
 
-1. 在输入框粘贴一个或多个链接，或直接粘贴 Bilibili / YouTube 分享文案。
+1. 在输入框粘贴一个或多个链接，或直接粘贴 Bilibili / YouTube / Douyin 分享文案。
 2. 选择下载预设：`Highest Video (MP4)`、`Best Audio (MP3)` 或 `Markdown 逐字稿（字幕优先）`。
 3. 点击开始任务。
 4. 在任务列表中查看状态、输出路径和逐字稿产物。
@@ -282,13 +284,14 @@ YTDLP_REMOTE_COMPONENTS=ejs:github
 ```bash
 YOUTUBE_COOKIES_PATH=/absolute/path/to/youtube.cookies.txt
 BILIBILI_COOKIES_PATH=/absolute/path/to/bilibili.cookies.txt
+DOUYIN_COOKIES_PATH=/absolute/path/to/douyin.cookies.txt
 ```
 
 说明：
 
 - Web UI 里“启用 Cookies”只表示这次任务允许使用 Cookies
 - 真正要想生效，还需要你提前配置好平台对应的登录态
-- 推荐把 YouTube 和 Bilibili 分开配置，避免串用
+- 推荐把 YouTube、Bilibili 和 Douyin 分开配置，避免串用
 - 开源仓库不要提交真实 Cookies；只在本地 `.env` 和本地 Cookies 文件里保存
 - Docker Compose 场景下，建议用 `DOCKER_COOKIES_PATH=/cookies.txt` 一类容器内路径
 

@@ -65,6 +65,8 @@ def detect_platform(url: str) -> str:
         return "Bilibili"
     if "youtube.com" in lowered or "youtu.be" in lowered:
         return "YouTube"
+    if "douyin.com" in lowered or "iesdouyin.com" in lowered:
+        return "Douyin"
     if "x.com" in lowered or "twitter.com" in lowered:
         return "X"
     return "Unknown"

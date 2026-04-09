@@ -134,13 +134,22 @@ function updateSubmitLabel() {
 function updateModeHint() {
   const preset = presetSelect.value;
   if (preset === config.transcriptPreset) {
-    let cookiesNote = "当前未检测到 Cookies，YouTube 和部分 B 站视频更可能直接回退到 MP3 转写。";
-    if (config.youtubeAuthConfigured && config.bilibiliAuthConfigured) {
-      cookiesNote = "已检测到 YouTube / Bilibili 登录态配置，字幕直提命中率会更高。";
+    const authPlatforms = [];
+    if (config.youtubeAuthConfigured) authPlatforms.push("YouTube");
+    if (config.bilibiliAuthConfigured) authPlatforms.push("Bilibili");
+    if (config.douyinAuthConfigured) authPlatforms.push("Douyin");
+
+    let cookiesNote = "当前未检测到 Cookies，YouTube、Douyin 和部分 B 站视频在受限场景下更可能回退到音频转写。";
+    if (authPlatforms.length === 3) {
+      cookiesNote = "已检测到 YouTube / Bilibili / Douyin 登录态配置，平台读取成功率会更高。";
+    } else if (authPlatforms.length === 2) {
+      cookiesNote = `当前已检测到 ${authPlatforms.join(" / ")} 登录态配置，对应平台会更稳。`;
     } else if (config.bilibiliAuthConfigured) {
-      cookiesNote = "当前只检测到 Bilibili 登录态。B 站更稳，但 YouTube 若报 bot 校验，仍需要单独配置 YouTube 登录态。";
+      cookiesNote = "当前只检测到 Bilibili 登录态。B 站更稳，但 YouTube 或 Douyin 若遇到校验，仍需要单独配置对应平台登录态。";
     } else if (config.youtubeAuthConfigured) {
       cookiesNote = "当前已检测到 YouTube 登录态配置，YouTube 下载和字幕直提会更稳。";
+    } else if (config.douyinAuthConfigured) {
+      cookiesNote = "当前已检测到 Douyin 登录态配置。若抖音后续出现验证或访问限制，这套登录态会更稳。";
     }
     modeHint.textContent =
       `当前会先尝试直接提取平台字幕；如果没有可用字幕，再自动下载 MP3 并转写，最后生成逐字稿和解析稿。${cookiesNote}`;
@@ -154,20 +163,29 @@ function updateModeHint() {
 }
 
 function updateCookiesHint() {
-  if (!config.youtubeAuthConfigured && !config.bilibiliAuthConfigured) {
+  const authPlatforms = [];
+  if (config.youtubeAuthConfigured) authPlatforms.push("YouTube");
+  if (config.bilibiliAuthConfigured) authPlatforms.push("Bilibili");
+  if (config.douyinAuthConfigured) authPlatforms.push("Douyin");
+
+  if (!authPlatforms.length) {
     cookiesHint.textContent =
-      "当前未检测到平台登录态。建议在 .env 里配置 YOUTUBE_COOKIES_FROM_BROWSER=chrome，或填写 YOUTUBE_COOKIES_PATH / BILIBILI_COOKIES_PATH。";
+      "当前未检测到平台登录态。建议在 .env 里配置 YOUTUBE_COOKIES_FROM_BROWSER=chrome，或填写 YOUTUBE_COOKIES_PATH / BILIBILI_COOKIES_PATH / DOUYIN_COOKIES_PATH。";
     return;
   }
-  if (config.youtubeAuthConfigured && config.bilibiliAuthConfigured) {
-    cookiesHint.textContent = "当前已检测到 YouTube 和 Bilibili 登录态配置。勾选“启用 Cookies”后，会按平台优先选择对应登录态。";
+  if (authPlatforms.length > 1) {
+    cookiesHint.textContent = `当前已检测到 ${authPlatforms.join("、")} 登录态配置。勾选“启用 Cookies”后，会按平台优先选择对应登录态。`;
     return;
   }
   if (config.youtubeAuthConfigured) {
     cookiesHint.textContent = "当前已检测到 YouTube 登录态配置。勾选“启用 Cookies”后，会优先用 YouTube 登录态访问下载和字幕接口。";
     return;
   }
-  cookiesHint.textContent = "当前已检测到 Bilibili 登录态配置。勾选“启用 Cookies”后，会优先用 Bilibili 登录态访问平台字幕接口。";
+  if (config.bilibiliAuthConfigured) {
+    cookiesHint.textContent = "当前已检测到 Bilibili 登录态配置。勾选“启用 Cookies”后，会优先用 Bilibili 登录态访问平台字幕接口。";
+    return;
+  }
+  cookiesHint.textContent = "当前已检测到 Douyin 登录态配置。勾选“启用 Cookies”后，会优先用 Douyin 登录态访问抖音下载接口。";
 }
 
 function describePreset(preset, route) {
