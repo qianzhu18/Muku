@@ -1,56 +1,72 @@
 # Video-Downloade
 
-一个本地优先的视频下载与逐字稿转换工具，当前提供 `Web UI + CLI` 两种入口。项目主线是：输入 Bilibili / YouTube 等链接，下载视频或音频，并在需要时生成 Markdown 逐字稿与 sidecar 文件。
+一个本地优先的视频下载、逐字稿生成与知识库整理工具，当前同时提供 `Web UI + CLI + Docker + Skill` 四套入口。
+
+项目主线已经比较明确：
+
+- 网页服务：适合直接粘贴链接并查看任务进度
+- Docker 容器：适合一键部署和复用现成 Web 服务
+- CLI：适合脚本、AI 代理、批量任务和容器内调用
+- Skill：适合让 Codex、Claude Code、Cursor Agent 等工具直接复用这套 CLI 契约
 
 ## 当前能力
 
-- Web UI：直接粘贴链接，支持多任务队列与进度展示
-- CLI：适合脚本、AI 代理和批处理调用
-- 下载预设：最高画质视频、MP3 音频、Markdown 逐字稿
-- 逐字稿路由：优先直提平台字幕，失败后回退到 MP3 转写
-- sidecar 产物：原始稿、解析稿、逐字稿、转写信息 JSON
-- Docker 部署：支持本地一键启动
+- Web UI：支持多任务队列、任务状态和产物路径展示
+- CLI：支持 `capture / download / audio / artifacts / knowledge / doctor / serve`
+- 字幕优先：优先直提平台字幕，失败后回退到 MP3 转写
+- sidecar 产物：原始稿、解析稿、逐字稿、知识库稿、转写信息 JSON
+- Docker 部署：可直接 `docker compose up -d --build`
+- AI 集成：稳定 `--json / --output paths / --result-file` 输出，适合代理程序消费
 
-## 项目状态
+## 文档入口
 
-- 已可使用：本地 Web 下载、CLI 调用、Docker 运行、字幕优先逐字稿流程
-- 正在完善：公开文档整理、Docker 一键部署规范、分享链接识别、安卓 APK 封装
-- 路线文档：
-  - [公开文档入口](docs/README.md)
-  - [Docker 部署规划](docs/docker-deployment.md)
-  - [输入链接与多端拓展路线](docs/input-expansion-roadmap.md)
-  - [公开 skills 目录](skills/README.md)
+- [README.md](README.md)：项目概览、安装、快速上手
+- [docs/cli.md](docs/cli.md)：CLI、AI 集成、批量与知识库工作流
+- [docs/docker-deployment.md](docs/docker-deployment.md)：Docker 一键部署与容器内 CLI 用法
+- [docs/input-expansion-roadmap.md](docs/input-expansion-roadmap.md)：分享链接识别、多端入口和 APK 路线
+- [skills/README.md](skills/README.md)：公开 skill 目录与安装方式
 
-> 提示：当前更适合个人、本地或小范围自用，不建议直接作为公共下载站点大规模对外开放。
-
-## 文档结构
-
-- `README.md`：GitHub 首页，只保留项目概览、安装与快速上手
-- `docs/`：对社区公开的说明文档、路线图与部署文档
-- `doc/`：内部设计草稿与开发备忘，不作为公开文档源
-
-这个分层的目标是把“给使用者看的说明”和“开发中的想法草稿”彻底分开，后面开源时会更清晰。
+> 当前更适合个人、本地或小范围自用，不建议直接作为公共下载站点大规模对外开放。
 
 ## 快速开始
 
 ### Docker Compose
 
-直接从源码目录启动：
+推荐对外展示的默认部署方式：
 
 ```bash
 cp .env.example .env
 docker compose up -d --build
 ```
 
-默认访问：`http://localhost:8080`
+默认访问地址：
 
-默认下载目录挂载为：
+```text
+http://localhost:8080
+```
 
-```bash
+默认下载目录挂载：
+
+```text
 ${HOME}/Downloads:/downloads
 ```
 
-如果要启用 Cookies，可在本地 `.env` 中配置：
+启动后可以先做一次容器内自检：
+
+```bash
+docker compose exec ytdl-webui video-downloade doctor --json
+```
+
+如果你想直接在容器里走完整的视频知识库链路：
+
+```bash
+docker compose exec ytdl-webui \
+  video-downloade capture "https://www.bilibili.com/video/BVxxxx" \
+  --knowledge \
+  --json
+```
+
+Cookies 场景可在本地 `.env` 中配置：
 
 ```bash
 DOCKER_COOKIES_PATH=/cookies.txt
@@ -58,7 +74,7 @@ DOCKER_YOUTUBE_COOKIES_PATH=/youtube.cookies.txt
 DOCKER_BILIBILI_COOKIES_PATH=/bilibili.cookies.txt
 ```
 
-然后再把你的 Cookies 文件挂进容器，例如：
+然后把文件挂进容器：
 
 ```yaml
 volumes:
@@ -69,42 +85,52 @@ volumes:
 
 ### Docker Run
 
-如果你更希望直接运行镜像：
+如果你更希望直接运行镜像，推荐先在本地构建一个稳定标签：
 
 ```bash
-docker pull zhangjinhong/ytdlp-webui:latest
+docker build -t video-downloade:local .
 
 docker run --rm -d -p 8080:8080 \
   -v "$HOME/Downloads:/downloads" \
   --name ytdlp-webui \
-  zhangjinhong/ytdlp-webui:latest
+  video-downloade:local
 ```
 
-镜像内也会安装 `video-downloade`，所以除了 Web UI，你也可以在容器里直接调用同一套 CLI 契约。
+镜像内同样安装了 `video-downloade`，所以除了 Web UI，也可以直接调用 CLI：
+
+```bash
+docker exec -it ytdlp-webui video-downloade doctor --json
+```
 
 ### 本地运行
 
 ```bash
-python3 -m venv venv
-source venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
+pip install -e .
 cp .env.example .env
 python webui/app.py
 ```
 
+如果你只想用 CLI，不必先启动 Web：
+
+```bash
+python -m webui.cli --help
+```
+
+### 关键环境变量
+
 首次启动前建议先补好 `.env`：
 
 - `OPENROUTER_API_KEY`：音频转写必需
-- `AI_CLEANUP_API_KEY` / `ARTICLE_DRAFT_API_KEY`：清洗稿和解析稿必需
+- `AI_CLEANUP_API_KEY`：清洗稿必需
+- `ARTICLE_DRAFT_API_KEY`：解析稿必需
 - `YOUTUBE_COOKIES_FROM_BROWSER` / `YOUTUBE_COOKIES_PATH`：提升 YouTube 下载和字幕直提成功率
 - `BILIBILI_COOKIES_PATH` / `BILIBILI_COOKIES_FROM_BROWSER`：提升 B 站字幕直提成功率
 - `YTDLP_REMOTE_COMPONENTS=ejs:github`：为部分受 JS challenge 保护的 YouTube 视频启用格式解析
 
-开源协作约定：
-
-- `.env` 不提交
-- `cookies.txt` / `*.cookies.txt` 不提交
-- 仓库只保留 `.env.example` 作为模板
+知识库整理默认会沿用 `ARTICLE_DRAFT_*` 这一组配置；如果你想给知识库链路单独指定模型或后端，可以在 `.env` 里额外设置 `KNOWLEDGE_DRAFT_*`。
 
 ## Web 使用方式
 
@@ -113,7 +139,7 @@ python webui/app.py
 3. 点击开始任务。
 4. 在任务列表中查看状态、输出路径和逐字稿产物。
 
-当前 Web API 入口很简单：
+当前 Web API 入口：
 
 - `POST /api/start`：提交任务
 - `GET /api/tasks`：查询最近任务
@@ -134,48 +160,51 @@ python webui/app.py
 pip install -e .
 ```
 
-安装后可用命令：
+高频命令：
 
 ```bash
-# 从 URL 直接生成 Markdown 逐字稿
-# 路由：先尝试直提平台字幕，失败再回退到 MP3 转写
-video-downloade capture "https://www.bilibili.com/video/BVxxxx" --json
+# URL -> 逐字稿 + 解析稿 + 知识库稿
+video-downloade capture "https://www.bilibili.com/video/BVxxxx" \
+  --knowledge \
+  --json
 
-# YouTube：建议单独传 YouTube 登录态
+# YouTube：建议传平台专用登录态
 video-downloade capture "https://www.youtube.com/watch?v=..." \
-  --youtube-cookies-path ./cookies/youtube.cookies.txt \
+  --youtube-cookies-from-browser chrome \
+  --knowledge \
   --json
 
 # 批量 URL：从文件或 stdin 输入
-video-downloade capture --input-file ./urls.txt --output paths
-cat ./urls.txt | video-downloade capture --stdin --json
+video-downloade capture --input-file ./urls.txt --knowledge --result-file ./capture.json --json
+cat ./urls.txt | video-downloade capture --stdin --output paths
 
 # 仅下载音频或视频，不生成逐字稿
 video-downloade download "https://www.bilibili.com/video/BVxxxx" \
   --preset "Best Audio (MP3)" \
   --json
 
-# 处理本地音频
-video-downloade audio "/path/to/file.mp3" --source-url "https://example.com" --json
+# 兼容旧链路：先下载音频，再顺带补逐字稿和知识库稿
+video-downloade download "https://www.bilibili.com/video/BVxxxx" \
+  --preset "Best Audio (MP3)" \
+  --transcript \
+  --knowledge \
+  --json
+
+# 本地音频 -> 逐字稿 + 知识库稿
+video-downloade audio "/path/to/file.mp3" --knowledge --json
 
 # 反查某个音频或 sidecar 对应的整组产物
 video-downloade artifacts "/path/to/file.mp3" --json
 video-downloade artifacts "/path/to/file.mp3" --full-metadata --json
 
-# 基于逐字稿资产生成知识库整理稿
+# 已经有 sidecar 时，单独补生成知识库稿
 video-downloade knowledge "/path/to/file.mp3" --json
 
-# 检查环境与配置
+# 检查依赖和配置
 video-downloade doctor --json
 
 # 启动现有 Web UI
 video-downloade serve --port 8080
-```
-
-如果你暂时不想安装 console script，也可以直接运行：
-
-```bash
-python -m webui.cli --help
 ```
 
 几个高频 CLI 选项：
@@ -183,24 +212,26 @@ python -m webui.cli --help
 - `--input-file` / `--stdin`：批量输入 URL 或音频路径
 - `--output text|json|paths`：切换输出格式，方便人类或 AI 消费
 - `--result-file`：把结果 JSON 落盘，便于后续自动化
-- `--cookies-from-browser`：直接读取浏览器登录态，适合 YouTube / Bilibili 需要登录才能拿字幕的场景
+- `--cookies-from-browser`：直接读取浏览器登录态
 - `--youtube-cookies-path` / `--youtube-cookies-from-browser`：只覆盖 YouTube 登录态
 - `--bilibili-cookies-path` / `--bilibili-cookies-from-browser`：只覆盖 Bilibili 登录态
-- `--language`：覆盖本次转写语言提示
-- `--transcription-model` / `--cleanup-model` / `--article-model`：单次任务覆盖模型
 - `--cleanup/--no-cleanup`、`--article/--no-article`：控制成本和处理深度
+- `--knowledge/--no-knowledge`：在 `capture / download --transcript / audio` 后继续生成知识库稿
+- `--knowledge-model` / `--knowledge-prompt-file`：单次任务覆盖知识库整理配置
+- `--overwrite-knowledge`：覆盖已有 `xxx - 知识库.md`
 - `artifacts` 默认返回 metadata 摘要；加 `--full-metadata` 才返回完整 `转写信息.json`
-- `knowledge`：基于已有逐字稿 sidecar 生成 `xxx - 知识库.md`
 
-## 逐字稿链路
+更完整的 CLI 说明见 [docs/cli.md](docs/cli.md)。
 
-当前推荐路线已经调整为：
+## 视频知识库链路
+
+当前推荐流程已经整理成：
 
 1. 平台字幕直提
 2. 无字幕时回退到 MP3 转写
 3. 逐字稿清洗
 4. 可选解析稿生成
-5. 输出 Markdown 与 JSON sidecar
+5. 可选知识库整理
 
 当前默认方向：
 
@@ -210,7 +241,7 @@ python -m webui.cli --help
 - 解析提示词：`解析提示词.md`
 - 知识库提示词：`知识库提示词.md`
 
-如果你选择 `Markdown 逐字稿（字幕优先）`，成功后通常会额外产出：
+如果你使用 `capture --knowledge` 或 `audio --knowledge`，成功后通常会额外产出：
 
 - `xxx - 原始逐字稿.txt`
 - `xxx - 解析稿.md`
@@ -218,12 +249,9 @@ python -m webui.cli --help
 - `xxx - 逐字稿.md`
 - `xxx - 转写信息.json`
 
-如果你发现 `YouTube` 或部分 `Bilibili` 视频在“字幕优先”模式下总是直接回退到 MP3，通常不是路由逻辑失效，而是平台要求登录态才能访问字幕接口。这时建议：
+## Cookies 与平台登录态
 
-- 配置 `COOKIES_PATH`
-- 或在 CLI 里加 `--cookies-from-browser chrome`
-
-### Cookies 怎么配
+如果你发现 `YouTube` 或部分 `Bilibili` 视频在“字幕优先”模式下总是直接回退到 MP3，通常不是路由逻辑失效，而是平台要求登录态才能访问字幕接口。
 
 推荐顺序：
 
@@ -231,7 +259,7 @@ python -m webui.cli --help
 
 ```bash
 video-downloade capture "https://www.youtube.com/watch?v=..." \
-  --cookies-from-browser chrome \
+  --youtube-cookies-from-browser chrome \
   --json
 ```
 
@@ -242,7 +270,7 @@ YOUTUBE_COOKIES_FROM_BROWSER=chrome
 YTDLP_REMOTE_COMPONENTS=ejs:github
 ```
 
-常见写法：
+常见浏览器参数：
 
 - `chrome`
 - `edge`
@@ -251,14 +279,6 @@ YTDLP_REMOTE_COMPONENTS=ejs:github
 
 2. 兼容方案：导出 `cookies.txt`
 
-常见流程：
-
-- 在浏览器里登录 YouTube 或 Bilibili
-- 安装浏览器扩展，例如 `Get cookies.txt LOCALLY`
-- 打开对应视频页面
-- 导出站点 cookies 为 `cookies.txt`
-- 在 `.env` 里配置：
-
 ```bash
 YOUTUBE_COOKIES_PATH=/absolute/path/to/youtube.cookies.txt
 BILIBILI_COOKIES_PATH=/absolute/path/to/bilibili.cookies.txt
@@ -266,70 +286,40 @@ BILIBILI_COOKIES_PATH=/absolute/path/to/bilibili.cookies.txt
 
 说明：
 
-- Web UI 里“启用 Cookies”只是表示“这次任务允许使用 Cookies”
+- Web UI 里“启用 Cookies”只表示这次任务允许使用 Cookies
 - 真正要想生效，还需要你提前配置好平台对应的登录态
-- 推荐把 YouTube 和 Bilibili 分开配置，避免一份 B 站 cookies 误用到 YouTube
-- 如果两者都没配，第三种模式仍然能工作，只是更容易直接回退到 MP3 转写
+- 推荐把 YouTube 和 Bilibili 分开配置，避免串用
 - 开源仓库不要提交真实 Cookies；只在本地 `.env` 和本地 Cookies 文件里保存
-- Docker Compose 场景下，建议用 `DOCKER_COOKIES_PATH=/cookies.txt`，不要直接把宿主机的 `COOKIES_PATH` 复用进容器
+- Docker Compose 场景下，建议用 `DOCKER_COOKIES_PATH=/cookies.txt` 一类容器内路径
 
-### 为什么 YouTube 现在更容易失败
-
-这不是你这套仓库单独的问题。`yt-dlp` 官方 FAQ 和 YouTube 相关说明里已经明确提到，YouTube 会对一部分请求触发额外校验，常见报错就是：
-
-- `Sign in to confirm you're not a bot`
-
-这类场景通常需要：
-
-- 浏览器登录态
-- 或重新导出的 YouTube cookies
-- 某些情况下还需要额外的 YouTube extractor 参数、EJS remote components 或 PO Token 流程
-
-官方参考：
+如果遇到 YouTube 的 bot 校验或格式受保护问题，可参考：
 
 - [yt-dlp FAQ: Passing cookies to yt-dlp](https://github.com/yt-dlp/yt-dlp/wiki/FAQ#passing-cookies-to-yt-dlp)
 - [yt-dlp FAQ: Extractors / Exporting YouTube cookies](https://github.com/yt-dlp/yt-dlp/wiki/Extractors#exporting-youtube-cookies)
 - [yt-dlp Wiki: PO Token Guide](https://github.com/yt-dlp/yt-dlp/wiki/PO-Token-Guide)
-
-最小环境变量示例：
-
-```bash
-OPENROUTER_API_KEY=your_key
-ENABLE_TRANSCRIPTION=true
-OPENROUTER_TRANSCRIPTION_MODEL=openai/gpt-audio-mini
-```
-
-可选环境变量示例：
-
-```bash
-ENABLE_AI_CLEANUP=true
-AI_CLEANUP_BASE_URL=https://open.bigmodel.cn/api/coding/paas/v4
-AI_CLEANUP_MODEL=GLM-4.5
-AI_CLEANUP_PROMPT_FILE=/app/角色提示词.md
-TRANSCRIPTION_LANGUAGE=auto
-```
-
-## 后续拓展方向
-
-- Docker 一键部署规范化：面向 GitHub 用户整理 `compose + env + volume + cookies` 的稳定模板
-- 分享链接识别：支持 Bilibili / YouTube 的网页链接、短链、App 分享文案和移动端分享文本
-- 统一输入层：把“原始输入 -> 链接规范化 -> 平台识别 -> 任务提交”做成独立模块
-- 安卓 APK：优先做“分享到 App 后直接发起解析任务”的轻量壳层
-
-这些规划已经拆成独立文档，后面可以边做边迭代，不需要等全部功能完成后再整理。
 
 ## AI / Skill 集成
 
 仓库里现在提供两套 skill 目录：
 
 - [skills/README.md](skills/README.md)：面向开源发布的公开 skill
-- [.codex/skills/video-downloade-cli/SKILL.md](.codex/skills/video-downloade-cli/SKILL.md)：当前 Codex 会直接使用的本地 skill
+- [.codex/skills/video-downloade-cli/SKILL.md](.codex/skills/video-downloade-cli/SKILL.md)：当前仓库内直接使用的本地 skill
 
-如果后续你要让 Claude Code、Codex 或其他 agent 在联网后直接调用这个仓库，推荐流程是：
+推荐的 AI 调用流程：
 
 1. 先跑 `video-downloade doctor --json`
-2. 再用 `capture` / `download` / `audio` / `artifacts` / `knowledge`
-3. YouTube 和 Bilibili 分开配置 Cookies
+2. URL 输入优先用 `capture --knowledge --json`
+3. 本地音频优先用 `audio --knowledge --json`
+4. 已有 sidecar 时用 `artifacts` / `knowledge`
+5. 优先消费 `--json` 或 `--output paths`，不要默认驱动浏览器
+
+如果你要把公开 skill 安装到 Codex：
+
+```bash
+./scripts/install-video-downloade-skill
+```
+
+这会把 `skills/video-downloade-cli` 复制到 `${CODEX_HOME:-$HOME/.codex}/skills/video-downloade-cli`。
 
 ## 目录结构
 
@@ -337,9 +327,11 @@ TRANSCRIPTION_LANGUAGE=auto
 webui/               Web UI、Flask API 与转写主流程
 docs/                对社区公开的说明文档
 doc/                 内部设计草稿（默认不作为公开文档）
+skills/              对外发布的 skill 目录
+.codex/skills/       仓库内直接使用的本地 skill
 AGENT.md             给 AI 代理看的命令行使用说明
 pyproject.toml       CLI 安装入口与打包配置
-scripts/             本地辅助脚本
+scripts/             本地辅助脚本与 skill 安装脚本
 Dockerfile           Docker 构建文件
 docker-compose.yml   Docker Compose 启动文件
 requirements.txt     Python 依赖

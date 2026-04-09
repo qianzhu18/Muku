@@ -191,6 +191,8 @@ def _runtime_overrides(
     keep_transcription_input: bool | object = _UNSET,
     cleanup_prompt_file: Path | object = _UNSET,
     article_prompt_file: Path | object = _UNSET,
+    knowledge_model: str | object = _UNSET,
+    knowledge_prompt_file: Path | object = _UNSET,
 ):
     snapshots: list[tuple[object, str, object]] = []
 
@@ -231,6 +233,7 @@ def _runtime_overrides(
     patch(web_app, "AI_CLEANUP_MODEL", cleanup_model)
     patch(cleanup_backend, "ARTICLE_DRAFT_MODEL", article_model)
     patch(web_app, "ARTICLE_DRAFT_MODEL", article_model)
+    patch(cleanup_backend, "KNOWLEDGE_DRAFT_MODEL", knowledge_model)
 
     if cleanup_prompt_file is not _UNSET:
         prompt_path = Path(cleanup_prompt_file).expanduser().resolve()
@@ -241,6 +244,10 @@ def _runtime_overrides(
         prompt_path = Path(article_prompt_file).expanduser().resolve()
         patch(cleanup_backend, "ARTICLE_DRAFT_PROMPT_FILE", str(prompt_path))
         patch(web_app, "ARTICLE_DRAFT_PROMPT_FILE", str(prompt_path))
+
+    if knowledge_prompt_file is not _UNSET:
+        prompt_path = Path(knowledge_prompt_file).expanduser().resolve()
+        patch(cleanup_backend, "KNOWLEDGE_DRAFT_PROMPT_FILE", str(prompt_path))
 
     try:
         yield
@@ -316,6 +323,65 @@ def _run_local_audio_jobs(
         results.append(_job_summary(job))
 
     return results
+
+
+def _knowledge_target_from_result(result: dict) -> Path | None:
+    for key in ("transcript_path", "markdown_path", "download_path", "artifact_dir"):
+        value = result.get(key)
+        if value:
+            return Path(value).expanduser().resolve()
+    return None
+
+
+def _attach_knowledge_results(
+    results: list[dict],
+    *,
+    overwrite: bool,
+) -> list[dict]:
+    targets: list[Path] = []
+    seen: set[str] = set()
+
+    for result in results:
+        if result.get("error"):
+            continue
+        target = _knowledge_target_from_result(result)
+        if target is None:
+            continue
+        target_key = str(target)
+        if target_key in seen:
+            continue
+        seen.add(target_key)
+        targets.append(target)
+
+    if not targets:
+        return results
+
+    knowledge_results = _run_knowledge_jobs(targets=tuple(targets), overwrite=overwrite)
+    knowledge_by_target = {record["target"]: record for record in knowledge_results}
+
+    merged_results: list[dict] = []
+    for result in results:
+        merged = dict(result)
+        target = _knowledge_target_from_result(result)
+        if target is not None:
+            knowledge_record = knowledge_by_target.get(str(target))
+            if knowledge_record is not None:
+                merged["knowledge_status"] = knowledge_record.get("status")
+                merged["knowledge_path"] = knowledge_record.get("knowledge_path")
+                merged["knowledge_exists"] = knowledge_record.get("knowledge_exists")
+                merged["knowledge_provider"] = knowledge_record.get("provider")
+                merged["knowledge_model"] = knowledge_record.get("model")
+                merged["knowledge_error"] = knowledge_record.get("error")
+                if knowledge_record.get("artifact_dir"):
+                    merged["artifact_dir"] = knowledge_record["artifact_dir"]
+                if knowledge_record.get("error"):
+                    merged["status"] = "Failed"
+                    merged["error"] = knowledge_record["error"]
+                elif knowledge_record.get("knowledge_path"):
+                    merged["status"] = "Done · knowledge ready"
+        merged_results.append(merged)
+
+    return merged_results
 
 
 def _artifact_paths_from_target(target: Path) -> dict[str, Path]:
@@ -460,63 +526,81 @@ def _run_knowledge_jobs(
     results: list[dict] = []
 
     for target in targets:
-        artifact_paths = _artifact_paths_from_target(target)
-        metadata = _load_artifact_metadata(artifact_paths)
-        artifact_base_path = _artifact_base_path_from_paths(artifact_paths, metadata)
-        knowledge_path = artifact_paths["knowledge_path"]
+        resolved_target = str(target.expanduser().resolve())
+        try:
+            artifact_paths = _artifact_paths_from_target(target)
+            metadata = _load_artifact_metadata(artifact_paths)
+            artifact_base_path = _artifact_base_path_from_paths(artifact_paths, metadata)
+            knowledge_path = artifact_paths["knowledge_path"]
 
-        if knowledge_path.exists() and not overwrite:
+            if knowledge_path.exists() and not overwrite:
+                results.append(
+                    {
+                        "target": resolved_target,
+                        "status": "Skipped",
+                        "knowledge_path": str(knowledge_path),
+                        "artifact_dir": str(knowledge_path.parent),
+                        "title": metadata.get("title") or artifact_base_path.stem,
+                        "error": None,
+                        "knowledge_exists": True,
+                        "provider": metadata.get("knowledge_provider"),
+                        "model": metadata.get("knowledge_model"),
+                    }
+                )
+                continue
+
+            source_text = _build_knowledge_source_text(artifact_paths)
+            title = metadata.get("title") or artifact_base_path.stem
+            source_url = metadata.get("source_url") or ""
+            platform = metadata.get("platform") or detect_platform(source_url)
+            knowledge_result = cleanup_backend.generate_knowledge_draft(
+                text=source_text,
+                title=title,
+                source_url=source_url,
+                platform=platform,
+            )
+            knowledge_text = knowledge_result["text"].strip()
+            knowledge_path.parent.mkdir(parents=True, exist_ok=True)
+            knowledge_path.write_text(knowledge_text + "\n", encoding="utf-8")
+
+            metadata["knowledge_provider"] = knowledge_result["provider"]
+            metadata["knowledge_model"] = knowledge_result["model"]
+            metadata["knowledge_base_url"] = cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL
+            metadata["knowledge_prompt_file"] = cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE
+            metadata["knowledge_error"] = None
+            metadata["knowledge_response"] = knowledge_result["raw_response"]
+            artifact_paths["meta_path"].write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
             results.append(
                 {
-                    "target": str(target.expanduser().resolve()),
-                    "status": "Skipped",
+                    "target": resolved_target,
+                    "status": "Done",
                     "knowledge_path": str(knowledge_path),
                     "artifact_dir": str(knowledge_path.parent),
-                    "title": metadata.get("title") or artifact_base_path.stem,
+                    "title": title,
                     "error": None,
                     "knowledge_exists": True,
+                    "provider": knowledge_result["provider"],
+                    "model": knowledge_result["model"],
                 }
             )
-            continue
-
-        source_text = _build_knowledge_source_text(artifact_paths)
-        title = metadata.get("title") or artifact_base_path.stem
-        source_url = metadata.get("source_url") or ""
-        platform = metadata.get("platform") or detect_platform(source_url)
-        knowledge_result = cleanup_backend.generate_knowledge_draft(
-            text=source_text,
-            title=title,
-            source_url=source_url,
-            platform=platform,
-        )
-        knowledge_text = knowledge_result["text"].strip()
-        knowledge_path.parent.mkdir(parents=True, exist_ok=True)
-        knowledge_path.write_text(knowledge_text + "\n", encoding="utf-8")
-
-        metadata["knowledge_provider"] = knowledge_result["provider"]
-        metadata["knowledge_model"] = knowledge_result["model"]
-        metadata["knowledge_base_url"] = cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL
-        metadata["knowledge_prompt_file"] = cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE
-        metadata["knowledge_error"] = None
-        metadata["knowledge_response"] = knowledge_result["raw_response"]
-        artifact_paths["meta_path"].write_text(
-            json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
-        )
-
-        results.append(
-            {
-                "target": str(target.expanduser().resolve()),
-                "status": "Done",
-                "knowledge_path": str(knowledge_path),
-                "artifact_dir": str(knowledge_path.parent),
-                "title": title,
-                "error": None,
-                "knowledge_exists": True,
-                "provider": knowledge_result["provider"],
-                "model": knowledge_result["model"],
-            }
-        )
+        except Exception as exc:
+            results.append(
+                {
+                    "target": resolved_target,
+                    "status": "Failed",
+                    "knowledge_path": None,
+                    "artifact_dir": None,
+                    "title": Path(resolved_target).stem,
+                    "error": str(exc),
+                    "knowledge_exists": False,
+                    "provider": None,
+                    "model": None,
+                }
+            )
 
     return results
 
@@ -592,6 +676,7 @@ def main() -> None:
 @click.option("--article-model", help="覆盖本次解析稿模型。")
 @click.option("--cleanup/--no-cleanup", default=True, help="是否启用 AI 清洗。")
 @click.option("--article/--no-article", default=True, help="是否生成解析稿。")
+@click.option("--knowledge/--no-knowledge", default=False, help="逐字稿完成后继续生成知识库整理稿。")
 @click.option(
     "--cleanup-prompt-file",
     type=click.Path(path_type=Path, dir_okay=False, exists=True),
@@ -601,6 +686,17 @@ def main() -> None:
     "--article-prompt-file",
     type=click.Path(path_type=Path, dir_okay=False, exists=True),
     help="覆盖解析稿提示词文件。",
+)
+@click.option("--knowledge-model", help="覆盖本次知识库整理模型。")
+@click.option(
+    "--knowledge-prompt-file",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    help="覆盖知识库整理提示词文件。",
+)
+@click.option(
+    "--overwrite-knowledge/--skip-existing-knowledge",
+    default=False,
+    help="是否覆盖已有的知识库文件。",
 )
 @click.option(
     "--keep-transcription-input/--no-keep-transcription-input",
@@ -629,11 +725,15 @@ def capture_command(
     article_model: str | None,
     cleanup: bool,
     article: bool,
+    knowledge: bool,
     cleanup_prompt_file: Path | None,
     article_prompt_file: Path | None,
+    knowledge_model: str | None,
+    knowledge_prompt_file: Path | None,
+    overwrite_knowledge: bool,
     keep_transcription_input: bool | None,
 ) -> None:
-    """从 URL 直接生成 Markdown 逐字稿，优先提取字幕，失败回退到 MP3 转写。"""
+    """从 URL 直接生成逐字稿，可选继续整理知识库。"""
     resolved_urls = _collect_url_inputs(
         values=urls,
         input_file=input_file,
@@ -655,11 +755,13 @@ def capture_command(
         bitrate=bitrate if bitrate else _UNSET,
         cleanup_enabled=cleanup,
         article_enabled=article,
+        knowledge_model=knowledge_model if knowledge_model else _UNSET,
         keep_transcription_input=keep_transcription_input
         if keep_transcription_input is not None
         else _UNSET,
         cleanup_prompt_file=cleanup_prompt_file if cleanup_prompt_file else _UNSET,
         article_prompt_file=article_prompt_file if article_prompt_file else _UNSET,
+        knowledge_prompt_file=knowledge_prompt_file if knowledge_prompt_file else _UNSET,
     ):
         results = _run_download_jobs(
             urls=resolved_urls,
@@ -675,6 +777,8 @@ def capture_command(
             ),
             generate_transcript=True,
         )
+        if knowledge:
+            results = _attach_knowledge_results(results, overwrite=overwrite_knowledge)
     _write_result_file(results, result_file)
     _emit_results(results, final_output_mode)
     _exit_for_failures(results)
@@ -758,6 +862,7 @@ def capture_command(
 @click.option("--article-model", help="覆盖本次解析稿模型。")
 @click.option("--cleanup/--no-cleanup", default=True, help="是否启用 AI 清洗。")
 @click.option("--article/--no-article", default=True, help="是否生成解析稿。")
+@click.option("--knowledge/--no-knowledge", default=False, help="逐字稿完成后继续生成知识库整理稿。")
 @click.option(
     "--cleanup-prompt-file",
     type=click.Path(path_type=Path, dir_okay=False, exists=True),
@@ -767,6 +872,17 @@ def capture_command(
     "--article-prompt-file",
     type=click.Path(path_type=Path, dir_okay=False, exists=True),
     help="覆盖解析稿提示词文件。",
+)
+@click.option("--knowledge-model", help="覆盖本次知识库整理模型。")
+@click.option(
+    "--knowledge-prompt-file",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    help="覆盖知识库整理提示词文件。",
+)
+@click.option(
+    "--overwrite-knowledge/--skip-existing-knowledge",
+    default=False,
+    help="是否覆盖已有的知识库文件。",
 )
 @click.option(
     "--keep-transcription-input/--no-keep-transcription-input",
@@ -797,13 +913,19 @@ def download_command(
     article_model: str | None,
     cleanup: bool,
     article: bool,
+    knowledge: bool,
     cleanup_prompt_file: Path | None,
     article_prompt_file: Path | None,
+    knowledge_model: str | None,
+    knowledge_prompt_file: Path | None,
+    overwrite_knowledge: bool,
     keep_transcription_input: bool | None,
 ) -> None:
     """下载 URL，可选附带逐字稿生成。"""
     if transcript and preset != DEFAULT_AUDIO_PRESET:
         raise click.ClickException("开启逐字稿时，请将 --preset 设为 Best Audio (MP3)。")
+    if knowledge and not transcript:
+        raise click.ClickException("开启知识库整理时，请同时传 --transcript。")
 
     resolved_urls = _collect_url_inputs(
         values=urls,
@@ -826,11 +948,13 @@ def download_command(
         bitrate=bitrate if bitrate else _UNSET,
         cleanup_enabled=cleanup,
         article_enabled=article,
+        knowledge_model=knowledge_model if knowledge_model else _UNSET,
         keep_transcription_input=keep_transcription_input
         if keep_transcription_input is not None
         else _UNSET,
         cleanup_prompt_file=cleanup_prompt_file if cleanup_prompt_file else _UNSET,
         article_prompt_file=article_prompt_file if article_prompt_file else _UNSET,
+        knowledge_prompt_file=knowledge_prompt_file if knowledge_prompt_file else _UNSET,
     ):
         results = _run_download_jobs(
             urls=resolved_urls,
@@ -846,6 +970,8 @@ def download_command(
             ),
             generate_transcript=transcript,
         )
+        if knowledge:
+            results = _attach_knowledge_results(results, overwrite=overwrite_knowledge)
     _write_result_file(results, result_file)
     _emit_results(results, final_output_mode)
     _exit_for_failures(results)
@@ -887,6 +1013,7 @@ def download_command(
 @click.option("--article-model", help="覆盖本次解析稿模型。")
 @click.option("--cleanup/--no-cleanup", default=True, help="是否启用 AI 清洗。")
 @click.option("--article/--no-article", default=True, help="是否生成解析稿。")
+@click.option("--knowledge/--no-knowledge", default=False, help="逐字稿完成后继续生成知识库整理稿。")
 @click.option(
     "--cleanup-prompt-file",
     type=click.Path(path_type=Path, dir_okay=False, exists=True),
@@ -896,6 +1023,17 @@ def download_command(
     "--article-prompt-file",
     type=click.Path(path_type=Path, dir_okay=False, exists=True),
     help="覆盖解析稿提示词文件。",
+)
+@click.option("--knowledge-model", help="覆盖本次知识库整理模型。")
+@click.option(
+    "--knowledge-prompt-file",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    help="覆盖知识库整理提示词文件。",
+)
+@click.option(
+    "--overwrite-knowledge/--skip-existing-knowledge",
+    default=False,
+    help="是否覆盖已有的知识库文件。",
 )
 @click.option(
     "--keep-transcription-input/--no-keep-transcription-input",
@@ -919,11 +1057,15 @@ def audio_command(
     article_model: str | None,
     cleanup: bool,
     article: bool,
+    knowledge: bool,
     cleanup_prompt_file: Path | None,
     article_prompt_file: Path | None,
+    knowledge_model: str | None,
+    knowledge_prompt_file: Path | None,
+    overwrite_knowledge: bool,
     keep_transcription_input: bool | None,
 ) -> None:
-    """把本地音频文件转成逐字稿和解析稿。"""
+    """把本地音频文件转成逐字稿，可选继续整理知识库。"""
     raw_paths = _collect_line_inputs(
         values=tuple(str(path) for path in audio_files),
         input_file=input_file,
@@ -939,11 +1081,13 @@ def audio_command(
         bitrate=bitrate if bitrate else _UNSET,
         cleanup_enabled=cleanup,
         article_enabled=article,
+        knowledge_model=knowledge_model if knowledge_model else _UNSET,
         keep_transcription_input=keep_transcription_input
         if keep_transcription_input is not None
         else _UNSET,
         cleanup_prompt_file=cleanup_prompt_file if cleanup_prompt_file else _UNSET,
         article_prompt_file=article_prompt_file if article_prompt_file else _UNSET,
+        knowledge_prompt_file=knowledge_prompt_file if knowledge_prompt_file else _UNSET,
     ):
         results = _run_local_audio_jobs(
             audio_files=tuple(Path(path) for path in raw_paths),
@@ -951,6 +1095,8 @@ def audio_command(
             title=title,
             copy_to_dir=copy_to_dir.expanduser().resolve() if copy_to_dir else None,
         )
+        if knowledge:
+            results = _attach_knowledge_results(results, overwrite=overwrite_knowledge)
     _write_result_file(results, result_file)
     _emit_results(results, final_output_mode)
     _exit_for_failures(results)
@@ -986,6 +1132,11 @@ def doctor_command(as_json: bool) -> None:
         ),
         "article_prompt_file": web_app.ARTICLE_DRAFT_PROMPT_FILE,
         "article_prompt_exists": Path(web_app.ARTICLE_DRAFT_PROMPT_FILE).exists(),
+        "knowledge_enabled": cleanup_backend.ENABLE_KNOWLEDGE_DRAFT,
+        "knowledge_model": cleanup_backend.KNOWLEDGE_DRAFT_MODEL,
+        "knowledge_key_configured": bool(cleanup_backend.KNOWLEDGE_DRAFT_API_KEY),
+        "knowledge_prompt_file": cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE,
+        "knowledge_prompt_exists": Path(cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE).exists(),
         "cookies_path": web_app.COOKIES_PATH or None,
         "cookies_exists": bool(web_app.COOKIES_PATH) and Path(web_app.COOKIES_PATH).exists(),
         "cookies_from_browser": web_app.COOKIES_FROM_BROWSER or None,
@@ -999,6 +1150,13 @@ def doctor_command(as_json: bool) -> None:
             shutil.which("yt-dlp") is not None
             and web_app.ENABLE_TRANSCRIPTION
             and bool(web_app.transcribe_audio.__globals__.get("OPENROUTER_API_KEY"))
+        ),
+        "knowledge_capture_ready": (
+            shutil.which("yt-dlp") is not None
+            and web_app.ENABLE_TRANSCRIPTION
+            and bool(web_app.transcribe_audio.__globals__.get("OPENROUTER_API_KEY"))
+            and cleanup_backend.ENABLE_KNOWLEDGE_DRAFT
+            and bool(cleanup_backend.KNOWLEDGE_DRAFT_API_KEY)
         ),
     }
 
@@ -1119,30 +1277,18 @@ def knowledge_command(
         label="逐字稿路径",
     )
     final_output_mode = _normalize_output_mode(output_mode, as_json)
-    with _runtime_overrides():
-        if knowledge_model:
-            original_model = cleanup_backend.KNOWLEDGE_DRAFT_MODEL
-            cleanup_backend.KNOWLEDGE_DRAFT_MODEL = knowledge_model
-        else:
-            original_model = None
-        if knowledge_prompt_file:
-            original_prompt = cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE
-            cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE = str(knowledge_prompt_file.expanduser().resolve())
-        else:
-            original_prompt = None
-        try:
-            results = _run_knowledge_jobs(
-                targets=tuple(Path(target) for target in resolved_targets),
-                overwrite=overwrite,
-            )
-        finally:
-            if original_model is not None:
-                cleanup_backend.KNOWLEDGE_DRAFT_MODEL = original_model
-            if original_prompt is not None:
-                cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE = original_prompt
+    with _runtime_overrides(
+        knowledge_model=knowledge_model if knowledge_model else _UNSET,
+        knowledge_prompt_file=knowledge_prompt_file if knowledge_prompt_file else _UNSET,
+    ):
+        results = _run_knowledge_jobs(
+            targets=tuple(Path(target) for target in resolved_targets),
+            overwrite=overwrite,
+        )
 
     _write_result_file(results, result_file)
     _emit_results(results, final_output_mode)
+    _exit_for_failures(results)
 
 
 @main.command("serve")

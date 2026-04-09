@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+from click.testing import CliRunner
+
 from webui import app as web_app
 from webui import cli as web_cli
 
@@ -204,6 +206,102 @@ class TranscriptRoutingTests(unittest.TestCase):
         self.assertEqual(results[0]["status"], "Done")
         self.assertIn("一句话总结", knowledge_text)
         self.assertEqual(metadata["knowledge_provider"], "zhipu-coding")
+
+    def test_run_knowledge_jobs_reports_failures_per_target(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base_path = Path(temp_dir) / "Sample [abc]" / "Sample [abc].mp3"
+            base_path.parent.mkdir(parents=True)
+            artifact_paths = web_app.build_artifact_paths(base_path)
+            artifact_paths["markdown_path"].write_text("# Sample\n\ncontent\n", encoding="utf-8")
+            artifact_paths["meta_path"].write_text(
+                (
+                    '{'
+                    f'"artifact_base_path": "{str(base_path).replace("\\", "\\\\")}", '
+                    '"title": "Sample", '
+                    '"source_url": "https://example.com/video"'
+                    '}\n'
+                ),
+                encoding="utf-8",
+            )
+
+            with mock.patch.object(
+                web_cli.cleanup_backend,
+                "generate_knowledge_draft",
+                side_effect=RuntimeError("knowledge backend offline"),
+            ):
+                results = web_cli._run_knowledge_jobs(targets=(base_path,), overwrite=True)
+
+        self.assertEqual(results[0]["status"], "Failed")
+        self.assertIn("knowledge backend offline", results[0]["error"])
+
+    def test_capture_command_can_chain_knowledge_generation(self) -> None:
+        runner = CliRunner()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            transcript_path = Path(temp_dir) / "Sample - 逐字稿.md"
+            transcript_path.write_text("# Sample\n", encoding="utf-8")
+            knowledge_path = Path(temp_dir) / "Sample - 知识库.md"
+
+            with mock.patch.object(
+                web_cli,
+                "_run_download_jobs",
+                return_value=[
+                    {
+                        "title": "Sample",
+                        "status": "Done · transcript ready",
+                        "error": None,
+                        "artifact_dir": str(transcript_path.parent),
+                        "download_path": str(Path(temp_dir) / "Sample.mp3"),
+                        "transcript_path": str(transcript_path),
+                    }
+                ],
+            ), mock.patch.object(
+                web_cli,
+                "_run_knowledge_jobs",
+                return_value=[
+                    {
+                        "target": str(transcript_path.resolve()),
+                        "status": "Done",
+                        "knowledge_path": str(knowledge_path),
+                        "artifact_dir": str(transcript_path.parent),
+                        "title": "Sample",
+                        "error": None,
+                        "knowledge_exists": True,
+                        "provider": "zhipu-coding",
+                        "model": "GLM-4.5",
+                    }
+                ],
+            ):
+                result = runner.invoke(
+                    web_cli.main,
+                    ["capture", "https://example.com/video", "--knowledge", "--json"],
+                )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        payload = json.loads(result.output)
+        self.assertEqual(payload["results"][0]["status"], "Done · knowledge ready")
+        self.assertTrue(payload["results"][0]["knowledge_path"].endswith("Sample - 知识库.md"))
+
+    def test_download_command_requires_transcript_for_knowledge(self) -> None:
+        runner = CliRunner()
+
+        result = runner.invoke(
+            web_cli.main,
+            ["download", "https://example.com/video", "--knowledge"],
+        )
+
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn("--transcript", result.output)
+
+    def test_doctor_command_includes_knowledge_fields(self) -> None:
+        runner = CliRunner()
+
+        result = runner.invoke(web_cli.main, ["doctor", "--json"])
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        payload = json.loads(result.output)
+        self.assertIn("knowledge_enabled", payload)
+        self.assertIn("knowledge_capture_ready", payload)
 
     def test_start_accepts_share_text_payload(self) -> None:
         share_text = (
