@@ -65,6 +65,8 @@ def detect_platform(url: str) -> str:
         return "Bilibili"
     if "youtube.com" in lowered or "youtu.be" in lowered:
         return "YouTube"
+    if "douyin.com" in lowered or "iesdouyin.com" in lowered:
+        return "Douyin"
     if "x.com" in lowered or "twitter.com" in lowered:
         return "X"
     return "Unknown"
@@ -75,6 +77,7 @@ def build_artifact_paths(base_path: Path) -> dict[str, Path]:
     return {
         "raw_path": base_path.with_name(f"{stem} - 原始逐字稿.txt"),
         "article_path": base_path.with_name(f"{stem} - 解析稿.md"),
+        "knowledge_path": base_path.with_name(f"{stem} - 知识库.md"),
         "markdown_path": base_path.with_name(f"{stem} - 逐字稿.md"),
         "meta_path": base_path.with_name(f"{stem} - 转写信息.json"),
     }

@@ -1,50 +1,47 @@
 ---
 name: video-downloade-cli
 description: >
-  Use this skill when an AI agent needs to download videos or audio from URLs,
-  generate Markdown transcripts, inspect transcript sidecars, or operate this
-  repository through its CLI instead of the Web UI.
+  Use this skill when an AI agent needs to process video or audio URLs, transcribe local audio,
+  generate transcript/article/knowledge assets, inspect sidecars, or operate this repository
+  through its CLI instead of the Web UI.
 ---
 
 # Video Downloade CLI Skill
 
 优先使用这个仓库的 CLI，不要默认去驱动网页。
 
-## Best commands
+## Fast path
 
 ```bash
-# URL -> Markdown transcript
-video-downloade capture "https://www.youtube.com/watch?v=..." --json
-
-# URL -> file download only
-video-downloade download "https://www.bilibili.com/video/BVxxxx" --preset "Best Audio (MP3)" --json
-
-# Share text -> transcript
-video-downloade capture "【标题】 https://www.bilibili.com/video/BVxxxx" --json
-
-# Local audio -> transcript
-video-downloade audio "/path/to/file.mp3" --json
-
-# Inspect sidecars
-video-downloade artifacts "/path/to/file.mp3" --json
-
-# Environment / auth check
 video-downloade doctor --json
+video-downloade capture "https://www.youtube.com/watch?v=..." --knowledge --json
+video-downloade audio "/path/to/file.mp3" --knowledge --json
+video-downloade artifacts "/path/to/file.mp3" --json
+video-downloade knowledge "/path/to/file.mp3" --json
 ```
 
 ## Routing rules
 
-- 目标是逐字稿或解析稿：用 `capture`
-- 只想下载视频或 MP3：用 `download`
-- 已经有本地音频：用 `audio`
-- 已经拿到 sidecar 路径：用 `artifacts`
-- 不确定依赖、模型、Cookies 是否已配置：先跑 `doctor`
+- 目标是从 URL 直接得到逐字稿和知识库稿：用 `capture --knowledge`
+- 只想下载文件：用 `download`
+- 已经有本地音频：用 `audio`；如果还要知识库稿，用 `audio --knowledge`
+- 已经拿到 sidecar 或音频路径：用 `artifacts`
+- 已经有逐字稿资产，只想补生成知识库稿：用 `knowledge`
+- 不确定依赖、模型、Cookies、提示词是否就绪：先跑 `doctor`
 
-## Input handling
+## Output strategy
 
-- 支持纯 URL
-- 支持 Bilibili / YouTube 分享文案
-- 支持多行输入、文件输入和 stdin
+- 默认优先 `--json`
+- 只需要路径时，用 `--output paths`
+- 批量任务建议加 `--result-file`
+- 批量输入优先 `--input-file` 或 `--stdin`
+
+## Batch examples
+
+```bash
+video-downloade capture --input-file ./urls.txt --knowledge --result-file ./capture.json --json
+cat ./urls.txt | video-downloade capture --stdin --output paths
+```
 
 ## Auth handling
 
@@ -57,24 +54,21 @@ video-downloade capture URL \
   --json
 ```
 
-也可走环境变量：
+## Useful runtime overrides
 
 ```bash
-YOUTUBE_COOKIES_FROM_BROWSER=chrome
-YOUTUBE_COOKIES_PATH=/absolute/path/to/youtube.cookies.txt
-BILIBILI_COOKIES_PATH=/absolute/path/to/bilibili.cookies.txt
+video-downloade capture URL --language zh --json
+video-downloade capture URL --transcription-model openai/gpt-audio-mini --json
+video-downloade capture URL --knowledge-model GLM-4.5 --json
+video-downloade capture URL --knowledge-prompt-file ./知识库提示词.md --json
+video-downloade audio FILE --no-article --knowledge --json
 ```
-
-## Output conventions
-
-- 默认优先 `--json`
-- 只需要路径时用 `--output paths`
-- 批量任务建议加 `--result-file`
 
 ## Expected artifacts
 
 - `xxx - 原始逐字稿.txt`
 - `xxx - 解析稿.md`
+- `xxx - 知识库.md`
 - `xxx - 逐字稿.md`
 - `xxx - 转写信息.json`
 
@@ -83,4 +77,4 @@ BILIBILI_COOKIES_PATH=/absolute/path/to/bilibili.cookies.txt
 - 不要在命令输出中回显真实密钥或 Cookies 内容
 - YouTube 下载失败时，优先检查 `doctor --json` 里的 `youtube_auth_configured`
 - Bilibili 和 YouTube 建议分开配置 Cookies，避免串用
-- 逐字稿模式是“字幕优先，音频转写兜底”
+- 知识库整理默认沿用 `ARTICLE_DRAFT_*` 这组配置；只有需要单独后端时再设置 `KNOWLEDGE_DRAFT_*`

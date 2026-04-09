@@ -1,106 +1,157 @@
-# Docker 部署规划
+# Docker 部署
 
-这份文档描述的是项目对外开源时，Docker 部署应该呈现成什么样，而不是只记录当前已经完成了什么。
+这份文档描述的是当前仓库已经稳定下来的 Docker 使用方式，目标是把“本机能跑”整理成“拿到仓库就能起服务”。
 
-## 目标
-
-把“开发者本机能跑”整理成“GitHub 用户拿到仓库后能稳定启动”。
-
-理想体验是：
-
-1. 克隆仓库
-2. 填好最少量环境变量
-3. 执行一次 `docker compose up -d`
-4. 浏览器访问页面即可开始下载或生成逐字稿
-
-## 对外部署的最小承诺
-
-开源到 GitHub 社区后，建议把 Docker 部署收敛成以下约定：
+## 默认约定
 
 - 默认端口：`8080`
 - 默认挂载下载目录：`/downloads`
 - 默认入口：Web UI
-- 可选能力：Cookies、逐字稿、解析稿
-- 所有可选配置统一由环境变量控制
+- 默认镜像入口命令：`video-downloade serve --host 0.0.0.0 --port 8080`
+- 默认适配：容器内也可以直接使用 `video-downloade` CLI
 
-这样用户理解成本最低，也方便以后给安卓端或桌面端复用同一套后端。
+## 推荐方式：Docker Compose
 
-## 建议保留的运行方式
+这是最适合作为仓库首页默认指令的方式。
 
-### 方式一：源码仓库 + Docker Compose
+### 1. 准备环境变量
 
-这是最适合开源仓库首页的方式。
+```bash
+cp .env.example .env
+```
 
-优点：
+最少建议补这几项：
 
-- 用户不需要自己拼 `docker run`
-- 环境变量和 volume 更容易维护
-- 以后加入 `mlx_service`、反向代理或健康检查时扩展最自然
+- `OPENROUTER_API_KEY`
+- `AI_CLEANUP_API_KEY`
+- `ARTICLE_DRAFT_API_KEY`
 
-### 方式二：预构建镜像
+如果你希望 YouTube / Bilibili 字幕优先链路更稳定，再补：
 
-适合作为补充，但不要取代 Compose 方案。
+- `DOCKER_YOUTUBE_COOKIES_PATH`
+- `DOCKER_BILIBILI_COOKIES_PATH`
 
-优点：
+### 2. 启动服务
 
-- 对只想运行的用户更省事
-- 适合 NAS、轻量服务器和已有 Docker 环境
+```bash
+docker compose up -d --build
+```
 
-## 建议完善的部署契约
+### 3. 访问页面
 
-### 1. 环境变量分层
+```text
+http://localhost:8080
+```
 
-建议把环境变量按三组组织：
+### 4. 自检
 
-- 基础运行：`HOST`、`PORT`、`DOWNLOAD_DIR`
-- 下载能力：`COOKIES_PATH`
-- 逐字稿能力：`OPENROUTER_API_KEY`、`ENABLE_TRANSCRIPTION`、`AI_CLEANUP_*`
+```bash
+docker compose exec ytdl-webui video-downloade doctor --json
+```
 
-现在已经适合补一个 `.env.example`，让用户只改必要项，不要直接编辑文档里的命令片段。
+如果你想看容器日志：
 
-### 2. Volume 分层
+```bash
+docker compose logs -f ytdl-webui
+```
 
-建议至少明确两类挂载：
+## 容器内 CLI
+
+容器里安装的是同一套 `video-downloade` CLI，所以部署后可以直接继续跑 AI/脚本链路。
+
+### URL -> 逐字稿 + 知识库
+
+```bash
+docker compose exec ytdl-webui \
+  video-downloade capture "https://www.bilibili.com/video/BVxxxx" \
+  --knowledge \
+  --json
+```
+
+### 本地侧已有批量 URL 文件
+
+```bash
+docker compose exec ytdl-webui \
+  video-downloade capture --input-file /downloads/urls.txt --knowledge --json
+```
+
+### 查询某条任务的 sidecar
+
+```bash
+docker compose exec ytdl-webui \
+  video-downloade artifacts "/downloads/Sample [abc]/Sample [abc].mp3" \
+  --json
+```
+
+## Volume 约定
+
+当前建议至少明确两类挂载：
 
 - 下载产物目录
 - Cookies 文件
 
-如果后面需要缓存或任务记录，也可以再补专门 volume，但第一版不要复杂化。
+默认 Compose 文件已经挂载：
 
-### 3. 容器自检
+```yaml
+volumes:
+  - ${HOME}/Downloads:/downloads
+```
 
-对外发布前，建议补这三种检查：
+如果你还要挂 Cookies，可追加：
 
-- `ffmpeg` 是否可用
-- `yt-dlp` 是否可用
-- 逐字稿相关 API Key 是否配置完整
+```yaml
+volumes:
+  - ${HOME}/Downloads:/downloads
+  - ./youtube.cookies.txt:/youtube.cookies.txt:ro
+  - ./bilibili.cookies.txt:/bilibili.cookies.txt:ro
+```
 
-现在仓库里已经有 `video-downloade doctor`，后续可以把它纳入部署说明和启动排错流程。
+然后在 `.env` 中配置：
 
-### 4. 镜像策略
+```bash
+DOCKER_YOUTUBE_COOKIES_PATH=/youtube.cookies.txt
+DOCKER_BILIBILI_COOKIES_PATH=/bilibili.cookies.txt
+```
 
-建议逐步形成以下习惯：
+## Docker Run
 
-- 提供明确版本标签，而不是只依赖 `latest`
-- 优先支持常见 `amd64` / `arm64`
-- 在 README 中明确“源码构建”和“镜像运行”两条路径
+如果你更喜欢直接运行镜像，推荐先在本地构建一个稳定标签：
 
-## Docker 公开前的整理清单
+```bash
+docker build -t video-downloade:local .
 
-- 维护 `.env.example`
-- 在 `docker-compose.yml` 里写清可选环境变量注释
-- 补一份面向普通用户的启动说明
-- 明确 Cookies 文件的挂载方式
-- 明确下载目录挂载后的文件落点
-- 根据需要补 `healthcheck`
-- 统一镜像命名与发布标签
+docker run --rm -d -p 8080:8080 \
+  -v "$HOME/Downloads:/downloads" \
+  --name ytdlp-webui \
+  video-downloade:local
+```
 
-## 和功能路线的关系
+容器起来后同样可以执行：
 
-Docker 不是孤立工作，它决定了后面几个能力是否容易接入：
+```bash
+docker exec -it ytdlp-webui video-downloade doctor --json
+```
 
-- 分享链接识别是否能复用同一后端服务
-- 安卓 APK 是否可以直接调用现有 API
-- 后续增加新的转写后端时，是否还能保持部署说明简洁
+## 升级方式
 
-所以 Docker 整理建议尽量先做“结构标准化”，再做“功能叠加”。
+### 源码仓库 + Compose
+
+```bash
+git pull
+docker compose up -d --build
+```
+
+### 本地镜像更新
+
+```bash
+docker build -t video-downloade:local .
+docker rm -f ytdlp-webui
+docker run ...
+```
+
+## 发布前建议
+
+- 保持 `.env.example` 只放模板，不提交真实密钥
+- 不要把真实 `cookies.txt` 提交进仓库
+- 推荐同时支持 `amd64` / `arm64`
+- README 里优先写 `docker compose up -d --build`，把 `docker run` 放在补充位置

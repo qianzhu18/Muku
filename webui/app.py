@@ -16,6 +16,7 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request
 
 try:
+    from .douyin_provider import DouyinDownloadError, download_douyin_media
     from .env_config import load_env_file
     from .openai_compatible_cleanup import (
         AI_CLEANUP_BASE_URL,
@@ -47,6 +48,7 @@ try:
         write_sidecar_files,
     )
 except ImportError:
+    from douyin_provider import DouyinDownloadError, download_douyin_media
     from env_config import load_env_file
     from openai_compatible_cleanup import (
         AI_CLEANUP_BASE_URL,
@@ -100,6 +102,8 @@ YOUTUBE_COOKIES_PATH = os.environ.get("YOUTUBE_COOKIES_PATH", "").strip()
 YOUTUBE_COOKIES_FROM_BROWSER = os.environ.get("YOUTUBE_COOKIES_FROM_BROWSER", "").strip()
 BILIBILI_COOKIES_PATH = os.environ.get("BILIBILI_COOKIES_PATH", "").strip()
 BILIBILI_COOKIES_FROM_BROWSER = os.environ.get("BILIBILI_COOKIES_FROM_BROWSER", "").strip()
+DOUYIN_COOKIES_PATH = os.environ.get("DOUYIN_COOKIES_PATH", "").strip()
+DOUYIN_COOKIES_FROM_BROWSER = os.environ.get("DOUYIN_COOKIES_FROM_BROWSER", "").strip()
 YTDLP_REMOTE_COMPONENTS = tuple(
     component.strip()
     for component in os.environ.get("YTDLP_REMOTE_COMPONENTS", "ejs:github").split(",")
@@ -272,6 +276,13 @@ def platform_auth_configured(platform: str) -> bool:
             or COOKIES_PATH
             or COOKIES_FROM_BROWSER
         )
+    if platform == "Douyin":
+        return bool(
+            DOUYIN_COOKIES_PATH
+            or DOUYIN_COOKIES_FROM_BROWSER
+            or COOKIES_PATH
+            or COOKIES_FROM_BROWSER
+        )
     return bool(
         COOKIES_PATH
         or COOKIES_FROM_BROWSER
@@ -279,6 +290,8 @@ def platform_auth_configured(platform: str) -> bool:
         or YOUTUBE_COOKIES_FROM_BROWSER
         or BILIBILI_COOKIES_PATH
         or BILIBILI_COOKIES_FROM_BROWSER
+        or DOUYIN_COOKIES_PATH
+        or DOUYIN_COOKIES_FROM_BROWSER
     )
 
 
@@ -305,6 +318,17 @@ def resolve_cookie_options(url: str) -> dict:
             return {"cookiefile": COOKIES_PATH}
         if COOKIES_FROM_BROWSER:
             return {"cookiesfrombrowser": parse_cookies_from_browser_spec(COOKIES_FROM_BROWSER)}
+        return {}
+
+    if platform == "Douyin":
+        if DOUYIN_COOKIES_FROM_BROWSER:
+            return {"cookiesfrombrowser": parse_cookies_from_browser_spec(DOUYIN_COOKIES_FROM_BROWSER)}
+        if DOUYIN_COOKIES_PATH:
+            return {"cookiefile": DOUYIN_COOKIES_PATH}
+        if COOKIES_FROM_BROWSER:
+            return {"cookiesfrombrowser": parse_cookies_from_browser_spec(COOKIES_FROM_BROWSER)}
+        if COOKIES_PATH:
+            return {"cookiefile": COOKIES_PATH}
         return {}
 
     if COOKIES_FROM_BROWSER:
@@ -337,6 +361,27 @@ def humanize_ydlp_error(job: Job, error_message: str) -> str:
             "这条 YouTube 视频当前返回的是受挑战保护的格式集合。通常需要启用 JS challenge 远程组件，"
             "并优先使用浏览器登录态。项目现在建议在 .env 配置 "
             "`YOUTUBE_COOKIES_FROM_BROWSER=chrome`，并保留默认 `YTDLP_REMOTE_COMPONENTS=ejs:github`。"
+        )
+
+    if platform == "Douyin" and any(
+        marker in folded.lower()
+        for marker in (
+            "login",
+            "cookies",
+            "verify",
+            "captcha",
+        )
+    ):
+        if platform_auth_configured("Douyin"):
+            return (
+                "抖音当前拒绝了这次请求。通常是平台登录态失效、需要重新验证，"
+                "或导出的 Cookies 已过期。建议重新登录抖音后，优先在 .env 配置 "
+                "`DOUYIN_COOKIES_FROM_BROWSER=chrome`，或更新 `DOUYIN_COOKIES_PATH`。"
+            )
+        return (
+            "抖音当前对这次请求做了额外校验。若后续出现登录或验证报错，"
+            "请在 .env 配置 `DOUYIN_COOKIES_FROM_BROWSER=chrome`，"
+            "或填写 `DOUYIN_COOKIES_PATH=/absolute/path/to/douyin.cookies.txt` 后重试。"
         )
 
     return normalized
@@ -859,6 +904,32 @@ def run_transcription_pipeline(job: Job, audio_path: Path, *, extra_meta: dict |
 
 
 def download_media(job: Job, preset_name: str) -> Path:
+    if detect_platform(job.url) == "Douyin" and job.use_cookies:
+        cookie_options = resolve_cookie_options(job.url)
+        if cookie_options:
+            set_job_state(job, status="Fetching Douyin media with dedicated provider...")
+            try:
+                result = download_douyin_media(
+                    url=job.url,
+                    preset_name=preset_name,
+                    output_dir=Path(DOWNLOAD_DIR),
+                    cookie_options=cookie_options,
+                    ffmpeg_bin=FFMPEG_BIN,
+                    audio_bitrate="192k",
+                )
+            except DouyinDownloadError as exc:
+                with job.lock:
+                    job.backend_error = str(exc)
+                raise
+
+            media_path = Path(result["download_path"])
+            with job.lock:
+                job.title = result["title"]
+                job.download_path = str(media_path)
+                job.artifact_dir = str(result["artifact_dir"])
+                job.progress = 100
+            return media_path
+
     options = build_ydl_options(job, preset_name=preset_name)
     selected_info: dict | None = None
     with yt_dlp.YoutubeDL(options) as ydl:
@@ -888,6 +959,16 @@ def download_media(job: Job, preset_name: str) -> Path:
 
 
 def run_transcript_job(job: Job) -> None:
+    if detect_platform(job.url) == "Douyin" and job.use_cookies and resolve_cookie_options(job.url):
+        set_job_state(job, status="Douyin detected. Skipping subtitle probe and downloading audio...")
+        media_path = download_media(job, AUDIO_PRESET_NAME)
+        run_transcription_pipeline(
+            job,
+            media_path,
+            extra_meta={"transcript_route": "douyin_audio_transcription"},
+        )
+        return
+
     subtitle_probe_error = None
     subtitle_result = None
 
@@ -969,6 +1050,7 @@ def index():
         "cookiesConfigured": cookies_configured,
         "youtubeAuthConfigured": platform_auth_configured("YouTube"),
         "bilibiliAuthConfigured": platform_auth_configured("Bilibili"),
+        "douyinAuthConfigured": platform_auth_configured("Douyin"),
         "transcriptionEnabled": ENABLE_TRANSCRIPTION,
         "transcriptionProvider": "openrouter",
         "transcriptionModel": OPENROUTER_TRANSCRIPTION_MODEL,
@@ -987,7 +1069,7 @@ def start():
     data = request.json or {}
     urls = collect_url_inputs(str(data.get("url", "")))
     if not urls:
-        return jsonify({"error": "没有识别到可用链接。支持直接粘贴 URL，或粘贴 Bilibili / YouTube 分享文案。"}), 400
+        return jsonify({"error": "没有识别到可用链接。支持直接粘贴 URL，或粘贴 Bilibili / YouTube / Douyin 分享文案。"}), 400
 
     preset = data.get("preset")
     use_cookies = bool(data.get("use_cookies"))
@@ -1020,10 +1102,12 @@ def tasks():
                 {
                     "id": job.job_id,
                     "title": job.title,
+                    "source_url": job.url,
                     "status": job.status,
                     "progress": round(job.progress),
                     "done": job.done,
                     "error": job.error,
+                    "backend_error": job.backend_error,
                     "artifact_dir": job.artifact_dir,
                     "download_path": job.download_path,
                     "transcript_path": job.transcript_path,

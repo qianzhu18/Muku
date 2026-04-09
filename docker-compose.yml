@@ -1,6 +1,7 @@
 services:
   ytdl-webui:
     build: .
+    restart: unless-stopped
     ports:
       - "8080:8080"
     volumes:
@@ -23,3 +24,4 @@ services:
       COOKIES_PATH: ${DOCKER_COOKIES_PATH:-}
       YOUTUBE_COOKIES_PATH: ${DOCKER_YOUTUBE_COOKIES_PATH:-}
       BILIBILI_COOKIES_PATH: ${DOCKER_BILIBILI_COOKIES_PATH:-}
+      DOUYIN_COOKIES_PATH: ${DOCKER_DOUYIN_COOKIES_PATH:-}

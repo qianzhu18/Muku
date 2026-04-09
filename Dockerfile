@@ -26,6 +26,7 @@ COPY pyproject.toml README.md requirements.txt ./
 COPY webui/ /app/webui/
 COPY 角色提示词.md /app/角色提示词.md
 COPY 解析提示词.md /app/解析提示词.md
+COPY 知识库提示词.md /app/知识库提示词.md
 RUN set -e; \
     PIP_URL="${PIP_INDEX_URL}"; \
     PIP_HOST=$(echo "$PIP_URL" | sed -E 's#^https?://##; s#/.*##'); \
@@ -38,5 +39,6 @@ RUN set -e; \
 
 ENV DOWNLOAD_DIR=/downloads
 EXPOSE 8080
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\", \"8080\")}/', timeout=5)"
 
 CMD ["video-downloade", "serve", "--host", "0.0.0.0", "--port", "8080"]

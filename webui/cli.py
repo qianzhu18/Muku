@@ -12,10 +12,12 @@ try:
     from . import app as web_app
     from . import openai_compatible_cleanup as cleanup_backend
     from . import openrouter_backends as openrouter_backend
+    from .transcript_pipeline import detect_platform
 except ImportError:
     import app as web_app
     import openai_compatible_cleanup as cleanup_backend
     import openrouter_backends as openrouter_backend
+    from transcript_pipeline import detect_platform
 
 
 DEFAULT_VIDEO_PRESET = web_app.VIDEO_PRESET_NAME
@@ -88,7 +90,7 @@ def _collect_url_inputs(
         seen.add(item)
 
     if not deduped:
-        raise click.ClickException("没有识别到可用链接。支持直接粘贴 URL，或粘贴 Bilibili / YouTube 分享文案。")
+        raise click.ClickException("没有识别到可用链接。支持直接粘贴 URL，或粘贴 Bilibili / YouTube / Douyin 分享文案。")
 
     return tuple(deduped)
 
@@ -112,7 +114,8 @@ def _emit_results(results: list[dict], output_mode: str) -> None:
     if output_mode == "paths":
         for result in results:
             primary_path = (
-                result.get("transcript_path")
+                result.get("knowledge_path")
+                or result.get("transcript_path")
                 or result.get("markdown_path")
                 or result.get("download_path")
                 or result.get("artifact_dir")
@@ -135,6 +138,8 @@ def _emit_results(results: list[dict], output_mode: str) -> None:
             click.echo(f"  raw: {result['raw_path']}")
         if result.get("article_path"):
             click.echo(f"  article: {result['article_path']}")
+        if result.get("knowledge_path"):
+            click.echo(f"  knowledge: {result['knowledge_path']}")
         if result.get("meta_path"):
             click.echo(f"  meta: {result['meta_path']}")
         if result.get("artifact_dir"):
@@ -150,6 +155,7 @@ def _job_summary(job: web_app.Job) -> dict:
         "status": job.status,
         "done": job.done,
         "error": job.error,
+        "backend_error": job.backend_error,
         "artifact_dir": job.artifact_dir,
         "download_path": job.download_path,
         "transcript_path": job.transcript_path,
@@ -176,6 +182,8 @@ def _runtime_overrides(
     youtube_cookies_from_browser: str | object = _UNSET,
     bilibili_cookies_path: Path | None = None,
     bilibili_cookies_from_browser: str | object = _UNSET,
+    douyin_cookies_path: Path | None = None,
+    douyin_cookies_from_browser: str | object = _UNSET,
     transcription_model: str | object = _UNSET,
     cleanup_model: str | object = _UNSET,
     article_model: str | object = _UNSET,
@@ -186,6 +194,8 @@ def _runtime_overrides(
     keep_transcription_input: bool | object = _UNSET,
     cleanup_prompt_file: Path | object = _UNSET,
     article_prompt_file: Path | object = _UNSET,
+    knowledge_model: str | object = _UNSET,
+    knowledge_prompt_file: Path | object = _UNSET,
 ):
     snapshots: list[tuple[object, str, object]] = []
 
@@ -209,6 +219,9 @@ def _runtime_overrides(
     if bilibili_cookies_path is not None:
         patch(web_app, "BILIBILI_COOKIES_PATH", str(bilibili_cookies_path.expanduser().resolve()))
     patch(web_app, "BILIBILI_COOKIES_FROM_BROWSER", bilibili_cookies_from_browser)
+    if douyin_cookies_path is not None:
+        patch(web_app, "DOUYIN_COOKIES_PATH", str(douyin_cookies_path.expanduser().resolve()))
+    patch(web_app, "DOUYIN_COOKIES_FROM_BROWSER", douyin_cookies_from_browser)
 
     patch(web_app, "TRANSCRIPTION_LANGUAGE", language)
     patch(web_app, "TRANSCRIPTION_AUDIO_BITRATE", bitrate)
@@ -226,6 +239,7 @@ def _runtime_overrides(
     patch(web_app, "AI_CLEANUP_MODEL", cleanup_model)
     patch(cleanup_backend, "ARTICLE_DRAFT_MODEL", article_model)
     patch(web_app, "ARTICLE_DRAFT_MODEL", article_model)
+    patch(cleanup_backend, "KNOWLEDGE_DRAFT_MODEL", knowledge_model)
 
     if cleanup_prompt_file is not _UNSET:
         prompt_path = Path(cleanup_prompt_file).expanduser().resolve()
@@ -236,6 +250,10 @@ def _runtime_overrides(
         prompt_path = Path(article_prompt_file).expanduser().resolve()
         patch(cleanup_backend, "ARTICLE_DRAFT_PROMPT_FILE", str(prompt_path))
         patch(web_app, "ARTICLE_DRAFT_PROMPT_FILE", str(prompt_path))
+
+    if knowledge_prompt_file is not _UNSET:
+        prompt_path = Path(knowledge_prompt_file).expanduser().resolve()
+        patch(cleanup_backend, "KNOWLEDGE_DRAFT_PROMPT_FILE", str(prompt_path))
 
     try:
         yield
@@ -313,8 +331,76 @@ def _run_local_audio_jobs(
     return results
 
 
+def _knowledge_target_from_result(result: dict) -> Path | None:
+    for key in ("transcript_path", "markdown_path", "download_path", "artifact_dir"):
+        value = result.get(key)
+        if value:
+            return Path(value).expanduser().resolve()
+    return None
+
+
+def _attach_knowledge_results(
+    results: list[dict],
+    *,
+    overwrite: bool,
+) -> list[dict]:
+    targets: list[Path] = []
+    seen: set[str] = set()
+
+    for result in results:
+        if result.get("error"):
+            continue
+        target = _knowledge_target_from_result(result)
+        if target is None:
+            continue
+        target_key = str(target)
+        if target_key in seen:
+            continue
+        seen.add(target_key)
+        targets.append(target)
+
+    if not targets:
+        return results
+
+    knowledge_results = _run_knowledge_jobs(targets=tuple(targets), overwrite=overwrite)
+    knowledge_by_target = {record["target"]: record for record in knowledge_results}
+
+    merged_results: list[dict] = []
+    for result in results:
+        merged = dict(result)
+        target = _knowledge_target_from_result(result)
+        if target is not None:
+            knowledge_record = knowledge_by_target.get(str(target))
+            if knowledge_record is not None:
+                merged["knowledge_status"] = knowledge_record.get("status")
+                merged["knowledge_path"] = knowledge_record.get("knowledge_path")
+                merged["knowledge_exists"] = knowledge_record.get("knowledge_exists")
+                merged["knowledge_provider"] = knowledge_record.get("provider")
+                merged["knowledge_model"] = knowledge_record.get("model")
+                merged["knowledge_error"] = knowledge_record.get("error")
+                if knowledge_record.get("artifact_dir"):
+                    merged["artifact_dir"] = knowledge_record["artifact_dir"]
+                if knowledge_record.get("error"):
+                    merged["status"] = "Failed"
+                    merged["error"] = knowledge_record["error"]
+                elif knowledge_record.get("knowledge_path"):
+                    merged["status"] = "Done · knowledge ready"
+        merged_results.append(merged)
+
+    return merged_results
+
+
 def _artifact_paths_from_target(target: Path) -> dict[str, Path]:
     target = target.expanduser().resolve()
+    if target.is_dir():
+        meta_candidates = sorted(target.glob("* - 转写信息.json"))
+        if meta_candidates:
+            return _artifact_paths_from_target(meta_candidates[0])
+        markdown_candidates = sorted(target.glob("* - 逐字稿.md"))
+        if markdown_candidates:
+            return _artifact_paths_from_target(markdown_candidates[0])
+        raise click.ClickException(f"目录里没有找到逐字稿产物：{target}")
+
     if target.name.endswith(" - 转写信息.json") and target.exists():
         meta = json.loads(target.read_text(encoding="utf-8"))
         artifact_base = meta.get("artifact_base_path") or meta.get("audio_path")
@@ -329,6 +415,7 @@ def _artifact_paths_from_target(target: Path) -> dict[str, Path]:
     known_suffixes = (
         " - 原始逐字稿.txt",
         " - 解析稿.md",
+        " - 知识库.md",
         " - 逐字稿.md",
         " - 转写信息.json",
     )
@@ -373,6 +460,11 @@ def _summarize_metadata(metadata: dict) -> dict:
         "article_base_url",
         "article_prompt_file",
         "article_error",
+        "knowledge_provider",
+        "knowledge_model",
+        "knowledge_base_url",
+        "knowledge_prompt_file",
+        "knowledge_error",
     ]
     return {key: metadata.get(key) for key in keys if key in metadata}
 
@@ -389,14 +481,134 @@ def _artifact_record_with_metadata(target: Path, *, include_full_metadata: bool)
         "artifact_dir": str(artifact_paths["markdown_path"].parent),
         "raw_path": str(artifact_paths["raw_path"]),
         "article_path": str(artifact_paths["article_path"]),
+        "knowledge_path": str(artifact_paths["knowledge_path"]),
         "markdown_path": str(artifact_paths["markdown_path"]),
         "meta_path": str(meta_path),
         "raw_exists": artifact_paths["raw_path"].exists(),
         "article_exists": artifact_paths["article_path"].exists(),
+        "knowledge_exists": artifact_paths["knowledge_path"].exists(),
         "markdown_exists": artifact_paths["markdown_path"].exists(),
         "meta_exists": meta_path.exists(),
         "metadata": metadata if include_full_metadata else _summarize_metadata(metadata),
     }
+
+
+def _load_artifact_metadata(artifact_paths: dict[str, Path]) -> dict:
+    meta_path = artifact_paths["meta_path"]
+    if not meta_path.exists():
+        raise click.ClickException(f"找不到 metadata 文件：{meta_path}")
+    return json.loads(meta_path.read_text(encoding="utf-8"))
+
+
+def _artifact_base_path_from_paths(artifact_paths: dict[str, Path], metadata: dict) -> Path:
+    artifact_base = metadata.get("artifact_base_path")
+    if artifact_base:
+        return Path(artifact_base).expanduser().resolve()
+
+    markdown_path = artifact_paths["markdown_path"]
+    suffix = " - 逐字稿.md"
+    stem = markdown_path.name[: -len(suffix)] if markdown_path.name.endswith(suffix) else markdown_path.stem
+    return markdown_path.with_name(stem)
+
+
+def _build_knowledge_source_text(artifact_paths: dict[str, Path]) -> str:
+    sections: list[str] = []
+    if artifact_paths["markdown_path"].exists():
+        sections.append("## 逐字稿\n\n" + artifact_paths["markdown_path"].read_text(encoding="utf-8").strip())
+    if artifact_paths["article_path"].exists():
+        sections.append("## 解析稿\n\n" + artifact_paths["article_path"].read_text(encoding="utf-8").strip())
+    if artifact_paths["raw_path"].exists():
+        sections.append("## 原始逐字稿\n\n" + artifact_paths["raw_path"].read_text(encoding="utf-8").strip())
+    if not sections:
+        raise click.ClickException("该目标还没有可用于整理知识库的逐字稿资产。")
+    return "\n\n".join(section for section in sections if section.strip()).strip()
+
+
+def _run_knowledge_jobs(
+    *,
+    targets: tuple[Path, ...],
+    overwrite: bool,
+) -> list[dict]:
+    results: list[dict] = []
+
+    for target in targets:
+        resolved_target = str(target.expanduser().resolve())
+        try:
+            artifact_paths = _artifact_paths_from_target(target)
+            metadata = _load_artifact_metadata(artifact_paths)
+            artifact_base_path = _artifact_base_path_from_paths(artifact_paths, metadata)
+            knowledge_path = artifact_paths["knowledge_path"]
+
+            if knowledge_path.exists() and not overwrite:
+                results.append(
+                    {
+                        "target": resolved_target,
+                        "status": "Skipped",
+                        "knowledge_path": str(knowledge_path),
+                        "artifact_dir": str(knowledge_path.parent),
+                        "title": metadata.get("title") or artifact_base_path.stem,
+                        "error": None,
+                        "knowledge_exists": True,
+                        "provider": metadata.get("knowledge_provider"),
+                        "model": metadata.get("knowledge_model"),
+                    }
+                )
+                continue
+
+            source_text = _build_knowledge_source_text(artifact_paths)
+            title = metadata.get("title") or artifact_base_path.stem
+            source_url = metadata.get("source_url") or ""
+            platform = metadata.get("platform") or detect_platform(source_url)
+            knowledge_result = cleanup_backend.generate_knowledge_draft(
+                text=source_text,
+                title=title,
+                source_url=source_url,
+                platform=platform,
+            )
+            knowledge_text = knowledge_result["text"].strip()
+            knowledge_path.parent.mkdir(parents=True, exist_ok=True)
+            knowledge_path.write_text(knowledge_text + "\n", encoding="utf-8")
+
+            metadata["knowledge_provider"] = knowledge_result["provider"]
+            metadata["knowledge_model"] = knowledge_result["model"]
+            metadata["knowledge_base_url"] = cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL
+            metadata["knowledge_prompt_file"] = cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE
+            metadata["knowledge_error"] = None
+            metadata["knowledge_response"] = knowledge_result["raw_response"]
+            artifact_paths["meta_path"].write_text(
+                json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+
+            results.append(
+                {
+                    "target": resolved_target,
+                    "status": "Done",
+                    "knowledge_path": str(knowledge_path),
+                    "artifact_dir": str(knowledge_path.parent),
+                    "title": title,
+                    "error": None,
+                    "knowledge_exists": True,
+                    "provider": knowledge_result["provider"],
+                    "model": knowledge_result["model"],
+                }
+            )
+        except Exception as exc:
+            results.append(
+                {
+                    "target": resolved_target,
+                    "status": "Failed",
+                    "knowledge_path": None,
+                    "artifact_dir": None,
+                    "title": Path(resolved_target).stem,
+                    "error": str(exc),
+                    "knowledge_exists": False,
+                    "provider": None,
+                    "model": None,
+                }
+            )
+
+    return results
 
 
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
@@ -445,6 +657,15 @@ def main() -> None:
     help="直接从浏览器读取 Bilibili 登录态，例如 chrome、edge:Profile 1。",
 )
 @click.option(
+    "--douyin-cookies-path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="显式指定 Douyin cookies.txt 路径。",
+)
+@click.option(
+    "--douyin-cookies-from-browser",
+    help="直接从浏览器读取 Douyin 登录态，例如 chrome、edge:Profile 1。",
+)
+@click.option(
     "--output-dir",
     type=click.Path(path_type=Path, file_okay=False),
     help="下载和逐字稿输出目录。",
@@ -470,6 +691,7 @@ def main() -> None:
 @click.option("--article-model", help="覆盖本次解析稿模型。")
 @click.option("--cleanup/--no-cleanup", default=True, help="是否启用 AI 清洗。")
 @click.option("--article/--no-article", default=True, help="是否生成解析稿。")
+@click.option("--knowledge/--no-knowledge", default=False, help="逐字稿完成后继续生成知识库整理稿。")
 @click.option(
     "--cleanup-prompt-file",
     type=click.Path(path_type=Path, dir_okay=False, exists=True),
@@ -479,6 +701,17 @@ def main() -> None:
     "--article-prompt-file",
     type=click.Path(path_type=Path, dir_okay=False, exists=True),
     help="覆盖解析稿提示词文件。",
+)
+@click.option("--knowledge-model", help="覆盖本次知识库整理模型。")
+@click.option(
+    "--knowledge-prompt-file",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    help="覆盖知识库整理提示词文件。",
+)
+@click.option(
+    "--overwrite-knowledge/--skip-existing-knowledge",
+    default=False,
+    help="是否覆盖已有的知识库文件。",
 )
 @click.option(
     "--keep-transcription-input/--no-keep-transcription-input",
@@ -496,6 +729,8 @@ def capture_command(
     youtube_cookies_from_browser: str | None,
     bilibili_cookies_path: Path | None,
     bilibili_cookies_from_browser: str | None,
+    douyin_cookies_path: Path | None,
+    douyin_cookies_from_browser: str | None,
     output_dir: Path | None,
     output_mode: str,
     as_json: bool,
@@ -507,11 +742,15 @@ def capture_command(
     article_model: str | None,
     cleanup: bool,
     article: bool,
+    knowledge: bool,
     cleanup_prompt_file: Path | None,
     article_prompt_file: Path | None,
+    knowledge_model: str | None,
+    knowledge_prompt_file: Path | None,
+    overwrite_knowledge: bool,
     keep_transcription_input: bool | None,
 ) -> None:
-    """从 URL 直接生成 Markdown 逐字稿，优先提取字幕，失败回退到 MP3 转写。"""
+    """从 URL 直接生成逐字稿，可选继续整理知识库。"""
     resolved_urls = _collect_url_inputs(
         values=urls,
         input_file=input_file,
@@ -526,6 +765,8 @@ def capture_command(
         youtube_cookies_from_browser=youtube_cookies_from_browser if youtube_cookies_from_browser else _UNSET,
         bilibili_cookies_path=bilibili_cookies_path,
         bilibili_cookies_from_browser=bilibili_cookies_from_browser if bilibili_cookies_from_browser else _UNSET,
+        douyin_cookies_path=douyin_cookies_path,
+        douyin_cookies_from_browser=douyin_cookies_from_browser if douyin_cookies_from_browser else _UNSET,
         transcription_model=transcription_model if transcription_model else _UNSET,
         cleanup_model=cleanup_model if cleanup_model else _UNSET,
         article_model=article_model if article_model else _UNSET,
@@ -533,11 +774,13 @@ def capture_command(
         bitrate=bitrate if bitrate else _UNSET,
         cleanup_enabled=cleanup,
         article_enabled=article,
+        knowledge_model=knowledge_model if knowledge_model else _UNSET,
         keep_transcription_input=keep_transcription_input
         if keep_transcription_input is not None
         else _UNSET,
         cleanup_prompt_file=cleanup_prompt_file if cleanup_prompt_file else _UNSET,
         article_prompt_file=article_prompt_file if article_prompt_file else _UNSET,
+        knowledge_prompt_file=knowledge_prompt_file if knowledge_prompt_file else _UNSET,
     ):
         results = _run_download_jobs(
             urls=resolved_urls,
@@ -550,9 +793,13 @@ def capture_command(
                 or bool(youtube_cookies_from_browser)
                 or bilibili_cookies_path is not None
                 or bool(bilibili_cookies_from_browser)
+                or douyin_cookies_path is not None
+                or bool(douyin_cookies_from_browser)
             ),
             generate_transcript=True,
         )
+        if knowledge:
+            results = _attach_knowledge_results(results, overwrite=overwrite_knowledge)
     _write_result_file(results, result_file)
     _emit_results(results, final_output_mode)
     _exit_for_failures(results)
@@ -611,6 +858,15 @@ def capture_command(
     help="直接从浏览器读取 Bilibili 登录态，例如 chrome、edge:Profile 1。",
 )
 @click.option(
+    "--douyin-cookies-path",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="显式指定 Douyin cookies.txt 路径。",
+)
+@click.option(
+    "--douyin-cookies-from-browser",
+    help="直接从浏览器读取 Douyin 登录态，例如 chrome、edge:Profile 1。",
+)
+@click.option(
     "--output-dir",
     type=click.Path(path_type=Path, file_okay=False),
     help="下载输出目录。",
@@ -636,6 +892,7 @@ def capture_command(
 @click.option("--article-model", help="覆盖本次解析稿模型。")
 @click.option("--cleanup/--no-cleanup", default=True, help="是否启用 AI 清洗。")
 @click.option("--article/--no-article", default=True, help="是否生成解析稿。")
+@click.option("--knowledge/--no-knowledge", default=False, help="逐字稿完成后继续生成知识库整理稿。")
 @click.option(
     "--cleanup-prompt-file",
     type=click.Path(path_type=Path, dir_okay=False, exists=True),
@@ -645,6 +902,17 @@ def capture_command(
     "--article-prompt-file",
     type=click.Path(path_type=Path, dir_okay=False, exists=True),
     help="覆盖解析稿提示词文件。",
+)
+@click.option("--knowledge-model", help="覆盖本次知识库整理模型。")
+@click.option(
+    "--knowledge-prompt-file",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    help="覆盖知识库整理提示词文件。",
+)
+@click.option(
+    "--overwrite-knowledge/--skip-existing-knowledge",
+    default=False,
+    help="是否覆盖已有的知识库文件。",
 )
 @click.option(
     "--keep-transcription-input/--no-keep-transcription-input",
@@ -664,6 +932,8 @@ def download_command(
     youtube_cookies_from_browser: str | None,
     bilibili_cookies_path: Path | None,
     bilibili_cookies_from_browser: str | None,
+    douyin_cookies_path: Path | None,
+    douyin_cookies_from_browser: str | None,
     output_dir: Path | None,
     output_mode: str,
     as_json: bool,
@@ -675,13 +945,19 @@ def download_command(
     article_model: str | None,
     cleanup: bool,
     article: bool,
+    knowledge: bool,
     cleanup_prompt_file: Path | None,
     article_prompt_file: Path | None,
+    knowledge_model: str | None,
+    knowledge_prompt_file: Path | None,
+    overwrite_knowledge: bool,
     keep_transcription_input: bool | None,
 ) -> None:
     """下载 URL，可选附带逐字稿生成。"""
     if transcript and preset != DEFAULT_AUDIO_PRESET:
         raise click.ClickException("开启逐字稿时，请将 --preset 设为 Best Audio (MP3)。")
+    if knowledge and not transcript:
+        raise click.ClickException("开启知识库整理时，请同时传 --transcript。")
 
     resolved_urls = _collect_url_inputs(
         values=urls,
@@ -697,6 +973,8 @@ def download_command(
         youtube_cookies_from_browser=youtube_cookies_from_browser if youtube_cookies_from_browser else _UNSET,
         bilibili_cookies_path=bilibili_cookies_path,
         bilibili_cookies_from_browser=bilibili_cookies_from_browser if bilibili_cookies_from_browser else _UNSET,
+        douyin_cookies_path=douyin_cookies_path,
+        douyin_cookies_from_browser=douyin_cookies_from_browser if douyin_cookies_from_browser else _UNSET,
         transcription_model=transcription_model if transcription_model else _UNSET,
         cleanup_model=cleanup_model if cleanup_model else _UNSET,
         article_model=article_model if article_model else _UNSET,
@@ -704,11 +982,13 @@ def download_command(
         bitrate=bitrate if bitrate else _UNSET,
         cleanup_enabled=cleanup,
         article_enabled=article,
+        knowledge_model=knowledge_model if knowledge_model else _UNSET,
         keep_transcription_input=keep_transcription_input
         if keep_transcription_input is not None
         else _UNSET,
         cleanup_prompt_file=cleanup_prompt_file if cleanup_prompt_file else _UNSET,
         article_prompt_file=article_prompt_file if article_prompt_file else _UNSET,
+        knowledge_prompt_file=knowledge_prompt_file if knowledge_prompt_file else _UNSET,
     ):
         results = _run_download_jobs(
             urls=resolved_urls,
@@ -721,9 +1001,13 @@ def download_command(
                 or bool(youtube_cookies_from_browser)
                 or bilibili_cookies_path is not None
                 or bool(bilibili_cookies_from_browser)
+                or douyin_cookies_path is not None
+                or bool(douyin_cookies_from_browser)
             ),
             generate_transcript=transcript,
         )
+        if knowledge:
+            results = _attach_knowledge_results(results, overwrite=overwrite_knowledge)
     _write_result_file(results, result_file)
     _emit_results(results, final_output_mode)
     _exit_for_failures(results)
@@ -765,6 +1049,7 @@ def download_command(
 @click.option("--article-model", help="覆盖本次解析稿模型。")
 @click.option("--cleanup/--no-cleanup", default=True, help="是否启用 AI 清洗。")
 @click.option("--article/--no-article", default=True, help="是否生成解析稿。")
+@click.option("--knowledge/--no-knowledge", default=False, help="逐字稿完成后继续生成知识库整理稿。")
 @click.option(
     "--cleanup-prompt-file",
     type=click.Path(path_type=Path, dir_okay=False, exists=True),
@@ -774,6 +1059,17 @@ def download_command(
     "--article-prompt-file",
     type=click.Path(path_type=Path, dir_okay=False, exists=True),
     help="覆盖解析稿提示词文件。",
+)
+@click.option("--knowledge-model", help="覆盖本次知识库整理模型。")
+@click.option(
+    "--knowledge-prompt-file",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    help="覆盖知识库整理提示词文件。",
+)
+@click.option(
+    "--overwrite-knowledge/--skip-existing-knowledge",
+    default=False,
+    help="是否覆盖已有的知识库文件。",
 )
 @click.option(
     "--keep-transcription-input/--no-keep-transcription-input",
@@ -797,11 +1093,15 @@ def audio_command(
     article_model: str | None,
     cleanup: bool,
     article: bool,
+    knowledge: bool,
     cleanup_prompt_file: Path | None,
     article_prompt_file: Path | None,
+    knowledge_model: str | None,
+    knowledge_prompt_file: Path | None,
+    overwrite_knowledge: bool,
     keep_transcription_input: bool | None,
 ) -> None:
-    """把本地音频文件转成逐字稿和解析稿。"""
+    """把本地音频文件转成逐字稿，可选继续整理知识库。"""
     raw_paths = _collect_line_inputs(
         values=tuple(str(path) for path in audio_files),
         input_file=input_file,
@@ -817,11 +1117,13 @@ def audio_command(
         bitrate=bitrate if bitrate else _UNSET,
         cleanup_enabled=cleanup,
         article_enabled=article,
+        knowledge_model=knowledge_model if knowledge_model else _UNSET,
         keep_transcription_input=keep_transcription_input
         if keep_transcription_input is not None
         else _UNSET,
         cleanup_prompt_file=cleanup_prompt_file if cleanup_prompt_file else _UNSET,
         article_prompt_file=article_prompt_file if article_prompt_file else _UNSET,
+        knowledge_prompt_file=knowledge_prompt_file if knowledge_prompt_file else _UNSET,
     ):
         results = _run_local_audio_jobs(
             audio_files=tuple(Path(path) for path in raw_paths),
@@ -829,6 +1131,8 @@ def audio_command(
             title=title,
             copy_to_dir=copy_to_dir.expanduser().resolve() if copy_to_dir else None,
         )
+        if knowledge:
+            results = _attach_knowledge_results(results, overwrite=overwrite_knowledge)
     _write_result_file(results, result_file)
     _emit_results(results, final_output_mode)
     _exit_for_failures(results)
@@ -848,6 +1152,7 @@ def doctor_command(as_json: bool) -> None:
         "subtitle_auth_configured": subtitle_auth_configured,
         "youtube_auth_configured": web_app.platform_auth_configured("YouTube"),
         "bilibili_auth_configured": web_app.platform_auth_configured("Bilibili"),
+        "douyin_auth_configured": web_app.platform_auth_configured("Douyin"),
         "ytdlp_remote_components": list(web_app.YTDLP_REMOTE_COMPONENTS),
         "transcription_enabled": web_app.ENABLE_TRANSCRIPTION,
         "transcription_model": web_app.OPENROUTER_TRANSCRIPTION_MODEL,
@@ -864,6 +1169,11 @@ def doctor_command(as_json: bool) -> None:
         ),
         "article_prompt_file": web_app.ARTICLE_DRAFT_PROMPT_FILE,
         "article_prompt_exists": Path(web_app.ARTICLE_DRAFT_PROMPT_FILE).exists(),
+        "knowledge_enabled": cleanup_backend.ENABLE_KNOWLEDGE_DRAFT,
+        "knowledge_model": cleanup_backend.KNOWLEDGE_DRAFT_MODEL,
+        "knowledge_key_configured": bool(cleanup_backend.KNOWLEDGE_DRAFT_API_KEY),
+        "knowledge_prompt_file": cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE,
+        "knowledge_prompt_exists": Path(cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE).exists(),
         "cookies_path": web_app.COOKIES_PATH or None,
         "cookies_exists": bool(web_app.COOKIES_PATH) and Path(web_app.COOKIES_PATH).exists(),
         "cookies_from_browser": web_app.COOKIES_FROM_BROWSER or None,
@@ -873,10 +1183,20 @@ def doctor_command(as_json: bool) -> None:
         "bilibili_cookies_path": web_app.BILIBILI_COOKIES_PATH or None,
         "bilibili_cookies_exists": bool(web_app.BILIBILI_COOKIES_PATH) and Path(web_app.BILIBILI_COOKIES_PATH).exists(),
         "bilibili_cookies_from_browser": web_app.BILIBILI_COOKIES_FROM_BROWSER or None,
+        "douyin_cookies_path": web_app.DOUYIN_COOKIES_PATH or None,
+        "douyin_cookies_exists": bool(web_app.DOUYIN_COOKIES_PATH) and Path(web_app.DOUYIN_COOKIES_PATH).exists(),
+        "douyin_cookies_from_browser": web_app.DOUYIN_COOKIES_FROM_BROWSER or None,
         "transcript_capture_ready": (
             shutil.which("yt-dlp") is not None
             and web_app.ENABLE_TRANSCRIPTION
             and bool(web_app.transcribe_audio.__globals__.get("OPENROUTER_API_KEY"))
+        ),
+        "knowledge_capture_ready": (
+            shutil.which("yt-dlp") is not None
+            and web_app.ENABLE_TRANSCRIPTION
+            and bool(web_app.transcribe_audio.__globals__.get("OPENROUTER_API_KEY"))
+            and cleanup_backend.ENABLE_KNOWLEDGE_DRAFT
+            and bool(cleanup_backend.KNOWLEDGE_DRAFT_API_KEY)
         ),
     }
 
@@ -938,6 +1258,77 @@ def artifacts_command(
     final_output_mode = _normalize_output_mode(output_mode, as_json)
     _write_result_file(results, result_file)
     _emit_results(results, final_output_mode)
+
+
+@main.command("knowledge")
+@click.argument("targets", nargs=-1, type=click.Path(path_type=Path))
+@click.option(
+    "--input-file",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    help="从文本文件读取逐字稿产物路径，每行一个。",
+)
+@click.option("--stdin", "stdin_enabled", is_flag=True, help="从标准输入读取逐字稿产物路径，每行一个。")
+@click.option(
+    "--output",
+    "output_mode",
+    type=click.Choice(OUTPUT_CHOICES),
+    default="json",
+    show_default=True,
+    help="结果输出格式。",
+)
+@click.option("--json", "as_json", is_flag=True, help="兼容旧用法，等同于 --output json。")
+@click.option(
+    "--result-file",
+    type=click.Path(path_type=Path, dir_okay=False),
+    help="把结果 JSON 额外写入文件。",
+)
+@click.option(
+    "--model",
+    "knowledge_model",
+    help="覆盖本次知识库整理模型。",
+)
+@click.option(
+    "--prompt-file",
+    "knowledge_prompt_file",
+    type=click.Path(path_type=Path, dir_okay=False, exists=True),
+    help="覆盖知识库整理提示词文件。",
+)
+@click.option(
+    "--overwrite/--skip-existing",
+    default=False,
+    help="是否覆盖已有的知识库文件。",
+)
+def knowledge_command(
+    targets: tuple[Path, ...],
+    input_file: Path | None,
+    stdin_enabled: bool,
+    output_mode: str,
+    as_json: bool,
+    result_file: Path | None,
+    knowledge_model: str | None,
+    knowledge_prompt_file: Path | None,
+    overwrite: bool,
+) -> None:
+    """基于现有逐字稿 sidecar 生成知识库整理稿。"""
+    resolved_targets = _collect_line_inputs(
+        values=tuple(str(target) for target in targets),
+        input_file=input_file,
+        stdin_enabled=stdin_enabled,
+        label="逐字稿路径",
+    )
+    final_output_mode = _normalize_output_mode(output_mode, as_json)
+    with _runtime_overrides(
+        knowledge_model=knowledge_model if knowledge_model else _UNSET,
+        knowledge_prompt_file=knowledge_prompt_file if knowledge_prompt_file else _UNSET,
+    ):
+        results = _run_knowledge_jobs(
+            targets=tuple(Path(target) for target in resolved_targets),
+            overwrite=overwrite,
+        )
+
+    _write_result_file(results, result_file)
+    _emit_results(results, final_output_mode)
+    _exit_for_failures(results)
 
 
 @main.command("serve")
