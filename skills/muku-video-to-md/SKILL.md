@@ -1,12 +1,12 @@
 ---
-name: muku-video-kb
+name: muku-video-to-md
 description: >
   Use this skill when an AI agent needs to turn knowledge-heavy video URLs or local audio
   from Bilibili, YouTube, Douyin, and similar sources into Markdown transcript and
   knowledge-base assets through the Muku CLI.
 ---
 
-# Muku Video KB
+# Muku Video to MD
 
 幕库的目标是把知识视频收入本地 Markdown 知识库，而不是做一个通用下载器。
 
@@ -23,6 +23,7 @@ description: >
 
 ```bash
 video-downloade doctor --json
+video-downloade config --json
 video-downloade capture "https://www.youtube.com/watch?v=..." --knowledge --json
 video-downloade capture "https://www.bilibili.com/video/BVxxxx" --knowledge --json
 video-downloade audio "/path/to/file.mp3" --knowledge --json
@@ -84,6 +85,20 @@ video-downloade capture URL \
 3. 优先用 `*_COOKIES_FROM_BROWSER`
 4. 浏览器方案不稳定时，再回退到 `*_COOKIES_PATH`
 
+如果任务开始前需要先把默认下载目录、模型或服务地址写好，优先执行：
+
+```bash
+video-downloade config \
+  --download-dir "/Users/you/Downloads/muku" \
+  --transcription-model openai/gpt-audio-mini \
+  --cleanup-model GLM-4.5 \
+  --article-model GLM-4.5 \
+  --knowledge-model GLM-4.5 \
+  --json
+```
+
+Docker 场景下，把 `--download-dir` 改成容器内路径，例如 `/downloads/default`。
+
 ## Pairing with browsing agents
 
 如果任务是“先从博主主页、频道页、系列页、合集页采链接，再批量收入知识库”，推荐与 [`web-access`](https://github.com/eze-is/web-access) 搭配：
@@ -114,5 +129,6 @@ video-downloade audio FILE --no-article --knowledge --json
 - 不要在命令输出中回显真实密钥或 Cookies 内容
 - YouTube 下载失败时，优先检查 `doctor --json` 里的 `youtube_auth_configured`
 - Bilibili、YouTube、Douyin 建议分开配置 Cookies，避免串用
+- 如果用户说“网页端已经配好了”，仍然建议先跑 `video-downloade config --json`，确认 CLI 与网页看到的是同一份默认配置
 - 转写前预处理音频默认写入系统临时目录，不会在下载目录里额外留下第二个可见 MP3
 - 知识库整理默认沿用 `ARTICLE_DRAFT_*` 这组配置；只有需要单独后端时再设置 `KNOWLEDGE_DRAFT_*`

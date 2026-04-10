@@ -27,6 +27,7 @@ python -m webui.cli --help
 
 ```bash
 video-downloade doctor --json
+video-downloade config --json
 ```
 
 ## 最推荐的工作流
@@ -73,7 +74,36 @@ cat ./urls.txt | video-downloade capture --stdin --output paths
 - 已经有本地音频：`audio`
 - 已经有 sidecar 路径，想定位整组产物：`artifacts`
 - 已经有逐字稿资产，只想补生成知识库稿：`knowledge`
+- 想查看或保存默认下载目录、模型、提示词和服务地址：`config`
 - 想先检查依赖、模型、Cookies、提示词：`doctor`
+
+## 配置命令
+
+`config` 用来查看或写入默认运行配置，适合给 Codex、Claude Code 或容器内脚本做首轮初始化。
+
+```bash
+# 查看当前生效配置
+video-downloade config --json
+
+# 设置默认下载目录和模型
+video-downloade config \
+  --download-dir "/Users/you/Downloads/muku" \
+  --transcription-model openai/gpt-audio-mini \
+  --cleanup-model GLM-4.5 \
+  --article-model GLM-4.5 \
+  --knowledge-model GLM-4.5 \
+  --json
+
+# Docker 容器里建议写容器内路径
+video-downloade config \
+  --download-dir /downloads/default \
+  --json
+```
+
+注意两点：
+
+- macOS / Windows 本地运行时，`--download-dir` 建议使用绝对路径
+- Docker 场景下，`--download-dir` 必须位于 `/downloads` 之内；真正落到宿主机哪个目录，由 `DOCKER_DOWNLOADS_DIR` 决定
 
 ## 多平台建议
 
@@ -101,6 +131,7 @@ cat ./urls.txt | video-downloade capture --stdin --output paths
 
 ```bash
 video-downloade capture URL --language zh --json
+video-downloade capture URL --output-dir "/Users/you/Downloads/muku/bilibili" --json
 video-downloade capture URL --transcription-model openai/gpt-audio-mini --json
 video-downloade capture URL --cleanup-model GLM-4.5 --article-model GLM-4.5 --json
 video-downloade capture URL --knowledge-model GLM-4.5 --json
@@ -176,6 +207,7 @@ DOUYIN_COOKIES_PATH=/absolute/path/to/douyin.cookies.txt
 - 下载目录默认只保留最终视频或最终 MP3，以及 sidecar 文稿。
 - 转写前预处理音频会写到系统临时目录，不再在产物目录里额外留下第二个可见 MP3。
 - 只有当你显式设置 `KEEP_TRANSCRIPTION_INPUT=true` 时，才建议保留这类调试输入。
+- `capture` / `download` 的 `--output-dir` 只覆盖当前命令；想改长期默认值，用 `video-downloade config --download-dir ...`
 
 ## 容器里调用 CLI
 
@@ -183,6 +215,7 @@ DOUYIN_COOKIES_PATH=/absolute/path/to/douyin.cookies.txt
 
 ```bash
 docker compose exec ytdl-webui video-downloade doctor --json
+docker compose exec ytdl-webui video-downloade config --json
 docker compose exec ytdl-webui video-downloade capture URL --knowledge --json
 ```
 
@@ -190,7 +223,7 @@ docker compose exec ytdl-webui video-downloade capture URL --knowledge --json
 
 公开 skill 已经整理在：
 
-- [../skills/muku-video-kb/SKILL.md](../skills/muku-video-kb/SKILL.md)
+- [../skills/muku-video-to-md/SKILL.md](../skills/muku-video-to-md/SKILL.md)
 
 安装到 Codex：
 
@@ -202,7 +235,7 @@ docker compose exec ytdl-webui video-downloade capture URL --knowledge --json
 
 ```bash
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
-cp -R ./skills/muku-video-kb "${CODEX_HOME:-$HOME/.codex}/skills/muku-video-kb"
+cp -R ./skills/muku-video-to-md "${CODEX_HOME:-$HOME/.codex}/skills/muku-video-to-md"
 ```
 
 ## 搭配 web-access

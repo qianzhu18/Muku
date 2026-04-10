@@ -180,6 +180,20 @@ class SubtitleParsingTests(unittest.TestCase):
         self.assertTrue(prepared_path.name.endswith(".transcribe.mp3"))
         prepared_path.unlink(missing_ok=True)
 
+    def test_resolve_download_dir_respects_root_lock(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root_dir = Path(temp_dir) / "downloads"
+            root_dir.mkdir()
+
+            with mock.patch.object(web_app, "DOWNLOAD_ROOT_DIR", str(root_dir)), mock.patch.object(
+                web_app, "DOWNLOAD_DIR", str(root_dir)
+            ):
+                resolved = web_app.resolve_download_dir("creator-series")
+
+                self.assertEqual(resolved, (root_dir / "creator-series").resolve())
+                with self.assertRaises(ValueError):
+                    web_app.resolve_download_dir(str(root_dir.parent / "outside"))
+
 
 class TranscriptRoutingTests(unittest.TestCase):
     def test_split_pending_inputs_skips_only_successful_checkpoint_records(self) -> None:
@@ -590,9 +604,46 @@ class TranscriptRoutingTests(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0, msg=result.output)
         payload = json.loads(result.output)
+        self.assertIn("settings_path", payload)
+        self.assertIn("download_root_locked", payload)
         self.assertIn("knowledge_enabled", payload)
         self.assertIn("knowledge_capture_ready", payload)
         self.assertIn("douyin_auth_configured", payload)
+
+    def test_config_command_persists_runtime_settings(self) -> None:
+        runner = CliRunner()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "config"
+            output_dir = Path(temp_dir) / "downloads"
+
+            with mock.patch.dict(
+                web_cli.os.environ,
+                {"VIDEO_DOWNLOADE_CONFIG_DIR": str(config_dir)},
+                clear=False,
+            ):
+                result = runner.invoke(
+                    web_cli.main,
+                    [
+                        "config",
+                        "--json",
+                        "--download-dir",
+                        str(output_dir),
+                        "--transcription-model",
+                        "openai/mock-transcribe",
+                        "--disable-knowledge",
+                    ],
+                )
+
+                payload = json.loads(result.output)
+                saved = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))
+                web_app.apply_runtime_settings({})
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(payload["download_dir"], str(output_dir.resolve()))
+        self.assertEqual(payload["openrouter_transcription_model"], "openai/mock-transcribe")
+        self.assertFalse(payload["enable_knowledge_draft"])
+        self.assertEqual(saved["download_dir"], str(output_dir.resolve()))
 
     def test_start_accepts_share_text_payload(self) -> None:
         share_text = (
@@ -623,6 +674,64 @@ class TranscriptRoutingTests(unittest.TestCase):
                 "https://www.bilibili.com/video/BV14PXKBbEhy/?share_source=copy_web&vd_source=test",
             )
             web_app.jobs.clear()
+
+    def test_start_accepts_download_dir_override(self) -> None:
+        with web_app.jobs_lock:
+            web_app.jobs.clear()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with web_app.app.test_client() as client, mock.patch.object(
+                web_app.executor, "submit", return_value=None
+            ):
+                response = client.post(
+                    "/api/start",
+                    json={
+                        "url": "https://www.youtube.com/watch?v=abcdefghijk",
+                        "preset": web_app.AUDIO_PRESET_NAME,
+                        "use_cookies": False,
+                        "generate_transcript": False,
+                        "download_dir": temp_dir,
+                    },
+                )
+
+        self.assertEqual(response.status_code, 200)
+        with web_app.jobs_lock:
+            created_jobs = list(web_app.jobs.values())
+            self.assertEqual(created_jobs[0].output_dir, str(Path(temp_dir).resolve()))
+
+    def test_update_settings_api_persists_values(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "config"
+            download_dir = Path(temp_dir) / "downloads"
+
+            with mock.patch.dict(
+                web_app.os.environ,
+                {"VIDEO_DOWNLOADE_CONFIG_DIR": str(config_dir)},
+                clear=False,
+            ):
+                with web_app.app.test_client() as client:
+                    response = client.post(
+                        "/api/settings",
+                        json={
+                            "download_dir": str(download_dir),
+                            "openrouter_transcription_model": "openai/mock-transcribe",
+                            "enable_ai_cleanup": True,
+                            "ai_cleanup_prompt_text": "清洗提示词",
+                            "enable_article_draft": True,
+                            "article_draft_prompt_text": "解析提示词",
+                            "enable_knowledge_draft": True,
+                            "knowledge_draft_prompt_text": "知识库提示词",
+                        },
+                    )
+
+                payload = response.get_json()
+                saved = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))
+                web_app.apply_runtime_settings({})
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(payload["download_dir"], str(download_dir.resolve()))
+        self.assertEqual(payload["ai_cleanup_prompt_source"], "inline")
+        self.assertEqual(saved["knowledge_draft_prompt_text"], "知识库提示词")
 
     def test_download_media_uses_download_info_when_preview_fails(self) -> None:
         job = web_app.Job(

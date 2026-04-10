@@ -4,7 +4,7 @@
 
 ## 当前提供
 
-- [muku-video-kb](muku-video-kb/SKILL.md)
+- [muku-video-to-md](muku-video-to-md/SKILL.md)
 
 这个 skill 适合：
 
@@ -16,8 +16,9 @@
 推荐使用顺序：
 
 1. 先跑 `video-downloade doctor --json`
-2. 再按平台补 `--youtube-cookies-*` / `--bilibili-cookies-*` / `--douyin-cookies-*`
-3. 最后让 agent 调 `capture --knowledge`、`audio --knowledge`、`artifacts` 等命令
+2. 再跑 `video-downloade config --json`，确认默认下载目录和模型配置
+3. 按平台补 `--youtube-cookies-*` / `--bilibili-cookies-*` / `--douyin-cookies-*`
+4. 最后让 agent 调 `capture --knowledge`、`audio --knowledge`、`artifacts` 等命令
 
 推荐的批量入库命令：
 
@@ -47,7 +48,7 @@ video-downloade capture \
 
 ```bash
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
-cp -R ./skills/muku-video-kb "${CODEX_HOME:-$HOME/.codex}/skills/muku-video-kb"
+cp -R ./skills/muku-video-to-md "${CODEX_HOME:-$HOME/.codex}/skills/muku-video-to-md"
 ```
 
 ## 目录约定

@@ -16,7 +16,7 @@ load_env_file()
 OPENROUTER_BASE_URL = os.environ.get("OPENROUTER_BASE_URL", "https://openrouter.ai/api/v1")
 OPENROUTER_API_KEY = os.environ.get("OPENROUTER_API_KEY", "").strip()
 OPENROUTER_SITE_URL = os.environ.get("OPENROUTER_SITE_URL", "")
-OPENROUTER_APP_NAME = os.environ.get("OPENROUTER_APP_NAME", "Downloader by Qianzhu")
+OPENROUTER_APP_NAME = os.environ.get("OPENROUTER_APP_NAME", "幕库 Muku")
 OPENROUTER_TRANSCRIPTION_MODEL = os.environ.get(
     "OPENROUTER_TRANSCRIPTION_MODEL", "openai/gpt-audio-mini"
 )

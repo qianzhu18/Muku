@@ -1,12 +1,12 @@
 ---
-name: muku-video-kb
+name: muku-video-to-md
 description: >
   Use this skill when the user wants to turn knowledge-heavy video URLs or local audio
   into Markdown transcript and knowledge-base assets through the Muku CLI instead of
   driving the Web UI.
 ---
 
-# Muku Video KB
+# Muku Video to MD
 
 幕库的目标是把知识视频收入本地 Markdown 知识库，而不是做一个通用下载器。
 
@@ -16,6 +16,7 @@ description: >
 
 ```bash
 video-downloade doctor --json
+video-downloade config --json
 video-downloade capture "https://www.bilibili.com/video/BVxxxx" --knowledge --json
 video-downloade capture "https://www.youtube.com/watch?v=..." --knowledge --json
 video-downloade audio "/path/to/file.mp3" --knowledge --json
@@ -59,6 +60,7 @@ video-downloade capture \
 ## Useful runtime overrides
 
 ```bash
+video-downloade config --download-dir "/Users/you/Downloads/muku" --json
 video-downloade capture URL --language zh --json
 video-downloade capture URL --transcription-model openai/gpt-audio-mini --json
 video-downloade capture URL --youtube-cookies-path ./cookies/youtube.cookies.txt --json
@@ -80,6 +82,7 @@ video-downloade audio FILE --cleanup-prompt-file ./角色提示词.md --article-
 ## Operational notes
 
 - 默认配置从仓库根目录 `.env` 读取，不要在命令里回显密钥
+- 如果用户说“网页里已经配过默认目录和模型”，先跑 `video-downloade config --json`，确认 CLI 侧也已经读到同一份配置
 - 先跑 `doctor --json`，检查 `youtube_auth_configured`、`bilibili_auth_configured`、`douyin_auth_configured`
 - YouTube、B 站、抖音受限内容抓取失败时，优先尝试平台级参数：`--youtube-cookies-*` / `--bilibili-cookies-*` / `--douyin-cookies-*`
 - `artifacts` 默认只返回摘要 metadata；排障时再加 `--full-metadata`

@@ -27,6 +27,7 @@ video-downloade knowledge "/path/to/file.mp3" --json
 
 # 检查依赖和 API 配置
 video-downloade doctor --json
+video-downloade config --json
 ```
 
 ## Output Expectations
@@ -46,9 +47,15 @@ video-downloade doctor --json
 - 如果平台字幕接口需要登录态，优先用 `--youtube-cookies-from-browser chrome` 或平台专用 `cookies.txt`。
 - YouTube 和 Bilibili 建议分开配置 Cookies，不要串用。
 
+## Runtime Config
+
+- 如果要先把默认下载目录、转写模型、解析模型或知识库模型配好，优先调用 `video-downloade config --json` 查看现状。
+- 需要写入默认配置时，用 `video-downloade config --download-dir ... --transcription-model ... --cleanup-model ... --article-model ... --knowledge-model ... --json`。
+- Docker 场景下，下载目录应写容器内路径，例如 `/downloads/default`；宿主机真实路径由 Compose 的卷映射决定。
+
 ## Skill
 
 如果代理支持读取仓库内 skill，优先加载：
 
-- [skills/muku-video-kb/SKILL.md](skills/muku-video-kb/SKILL.md)
-- [.codex/skills/muku-video-kb/SKILL.md](.codex/skills/muku-video-kb/SKILL.md)
+- [skills/muku-video-to-md/SKILL.md](skills/muku-video-to-md/SKILL.md)
+- [.codex/skills/muku-video-to-md/SKILL.md](.codex/skills/muku-video-to-md/SKILL.md)

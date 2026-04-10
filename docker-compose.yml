@@ -5,13 +5,17 @@ services:
     ports:
       - "8080:8080"
     volumes:
-      - ${HOME}/Downloads:/downloads
-      # - ./cookies.txt:/cookies.txt:ro
+      - "${DOCKER_DOWNLOADS_DIR:-./docker-data/downloads}:/downloads"
+      - "${DOCKER_CONFIG_DIR:-./docker-data/config}:/config"
+      # - "./cookies:/cookies:ro"
     environment:
       HOST: 0.0.0.0
       PORT: 8080
       DOWNLOAD_DIR: /downloads
+      DOWNLOAD_ROOT_DIR: /downloads
+      VIDEO_DOWNLOADE_CONFIG_DIR: /config
       OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      OPENROUTER_BASE_URL: ${OPENROUTER_BASE_URL:-https://openrouter.ai/api/v1}
       ENABLE_TRANSCRIPTION: ${ENABLE_TRANSCRIPTION:-true}
       OPENROUTER_TRANSCRIPTION_MODEL: ${OPENROUTER_TRANSCRIPTION_MODEL:-openai/gpt-audio-mini}
       ENABLE_AI_CLEANUP: ${ENABLE_AI_CLEANUP:-true}

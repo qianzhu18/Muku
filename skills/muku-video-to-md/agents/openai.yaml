@@ -1,0 +1,4 @@
+interface:
+  display_name: "Muku Video to MD"
+  short_description: "把 B站 / YouTube / 抖音视频沉淀为 Markdown 知识库"
+  default_prompt: "Use $muku-video-to-md to turn knowledge-heavy video URLs or local audio into Markdown transcript and knowledge-base assets through the Muku CLI, without driving the web UI."

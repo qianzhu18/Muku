@@ -521,6 +521,7 @@ def _job_summary(job: web_app.Job) -> dict:
         "generate_transcript": job.generate_transcript,
         "preset": job.preset,
         "source_url": job.url,
+        "output_dir": job.output_dir,
     }
 
 
@@ -833,16 +834,19 @@ def _summarize_metadata(metadata: dict) -> dict:
         "cleanup_model",
         "cleanup_base_url",
         "cleanup_prompt_file",
+        "cleanup_prompt_source",
         "cleanup_error",
         "article_provider",
         "article_model",
         "article_base_url",
         "article_prompt_file",
+        "article_prompt_source",
         "article_error",
         "knowledge_provider",
         "knowledge_model",
         "knowledge_base_url",
         "knowledge_prompt_file",
+        "knowledge_prompt_source",
         "knowledge_error",
     ]
     return {key: metadata.get(key) for key in keys if key in metadata}
@@ -949,6 +953,9 @@ def _run_knowledge_jobs(
             metadata["knowledge_model"] = knowledge_result["model"]
             metadata["knowledge_base_url"] = cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL
             metadata["knowledge_prompt_file"] = cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE
+            metadata["knowledge_prompt_source"] = (
+                "inline" if cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_TEXT.strip() else "file"
+            )
             metadata["knowledge_error"] = None
             metadata["knowledge_response"] = knowledge_result["raw_response"]
             artifact_paths["meta_path"].write_text(
@@ -991,6 +998,137 @@ def _run_knowledge_jobs(
 @click.group(context_settings={"help_option_names": ["-h", "--help"]})
 def main() -> None:
     """Downloader by Qianzhu 的 CLI 入口。"""
+
+
+@main.command("config")
+@click.option("--json", "as_json", is_flag=True, help="输出机器可读 JSON。")
+@click.option(
+    "--download-dir",
+    type=click.Path(path_type=Path, file_okay=False),
+    help="设置默认下载目录；Docker 模式下必须位于已挂载的下载根目录内。",
+)
+@click.option("--openrouter-base-url", help="设置 OpenRouter 或兼容转写服务的 Base URL。")
+@click.option("--openrouter-api-key", help="设置转写服务 API Key。可传空字符串清空。")
+@click.option("--openrouter-site-url", help="设置 OpenRouter HTTP-Referer。")
+@click.option("--openrouter-app-name", help="设置 OpenRouter X-Title。")
+@click.option("--transcription-model", help="设置默认音频转写模型。")
+@click.option("--openrouter-article-model", help="设置 OpenRouter 解析稿兜底模型。")
+@click.option(
+    "--enable-cleanup/--disable-cleanup",
+    "enable_cleanup",
+    default=None,
+    help="是否启用 AI 清洗。",
+)
+@click.option("--cleanup-base-url", help="设置清洗服务 Base URL。")
+@click.option("--cleanup-api-key", help="设置清洗服务 API Key。可传空字符串清空。")
+@click.option("--cleanup-model", help="设置默认清洗模型。")
+@click.option("--cleanup-prompt-text", help="设置内联清洗提示词；空字符串表示回退到提示词文件。")
+@click.option(
+    "--enable-article/--disable-article",
+    "enable_article",
+    default=None,
+    help="是否启用解析稿生成。",
+)
+@click.option("--article-base-url", help="设置解析稿服务 Base URL。")
+@click.option("--article-api-key", help="设置解析稿服务 API Key。可传空字符串清空。")
+@click.option("--article-model", help="设置默认解析稿模型。")
+@click.option("--article-prompt-text", help="设置内联解析稿提示词；空字符串表示回退到提示词文件。")
+@click.option(
+    "--enable-knowledge/--disable-knowledge",
+    "enable_knowledge",
+    default=None,
+    help="是否启用知识库整理。",
+)
+@click.option("--knowledge-base-url", help="设置知识库整理服务 Base URL。")
+@click.option("--knowledge-api-key", help="设置知识库整理服务 API Key。可传空字符串清空。")
+@click.option("--knowledge-model", help="设置默认知识库整理模型。")
+@click.option("--knowledge-prompt-text", help="设置内联知识库提示词；空字符串表示回退到提示词文件。")
+def config_command(
+    as_json: bool,
+    download_dir: Path | None,
+    openrouter_base_url: str | None,
+    openrouter_api_key: str | None,
+    openrouter_site_url: str | None,
+    openrouter_app_name: str | None,
+    transcription_model: str | None,
+    openrouter_article_model: str | None,
+    enable_cleanup: bool | None,
+    cleanup_base_url: str | None,
+    cleanup_api_key: str | None,
+    cleanup_model: str | None,
+    cleanup_prompt_text: str | None,
+    enable_article: bool | None,
+    article_base_url: str | None,
+    article_api_key: str | None,
+    article_model: str | None,
+    article_prompt_text: str | None,
+    enable_knowledge: bool | None,
+    knowledge_base_url: str | None,
+    knowledge_api_key: str | None,
+    knowledge_model: str | None,
+    knowledge_prompt_text: str | None,
+) -> None:
+    """查看或保存默认运行配置。"""
+    updates: dict[str, object] = {}
+
+    if download_dir is not None:
+        updates["download_dir"] = str(download_dir)
+    if openrouter_base_url is not None:
+        updates["openrouter_base_url"] = openrouter_base_url
+    if openrouter_api_key is not None:
+        updates["openrouter_api_key"] = openrouter_api_key
+    if openrouter_site_url is not None:
+        updates["openrouter_site_url"] = openrouter_site_url
+    if openrouter_app_name is not None:
+        updates["openrouter_app_name"] = openrouter_app_name
+    if transcription_model is not None:
+        updates["openrouter_transcription_model"] = transcription_model
+    if openrouter_article_model is not None:
+        updates["openrouter_article_model"] = openrouter_article_model
+    if enable_cleanup is not None:
+        updates["enable_ai_cleanup"] = enable_cleanup
+    if cleanup_base_url is not None:
+        updates["ai_cleanup_base_url"] = cleanup_base_url
+    if cleanup_api_key is not None:
+        updates["ai_cleanup_api_key"] = cleanup_api_key
+    if cleanup_model is not None:
+        updates["ai_cleanup_model"] = cleanup_model
+    if cleanup_prompt_text is not None:
+        updates["ai_cleanup_prompt_text"] = cleanup_prompt_text
+    if enable_article is not None:
+        updates["enable_article_draft"] = enable_article
+    if article_base_url is not None:
+        updates["article_draft_base_url"] = article_base_url
+    if article_api_key is not None:
+        updates["article_draft_api_key"] = article_api_key
+    if article_model is not None:
+        updates["article_draft_model"] = article_model
+    if article_prompt_text is not None:
+        updates["article_draft_prompt_text"] = article_prompt_text
+    if enable_knowledge is not None:
+        updates["enable_knowledge_draft"] = enable_knowledge
+    if knowledge_base_url is not None:
+        updates["knowledge_draft_base_url"] = knowledge_base_url
+    if knowledge_api_key is not None:
+        updates["knowledge_draft_api_key"] = knowledge_api_key
+    if knowledge_model is not None:
+        updates["knowledge_draft_model"] = knowledge_model
+    if knowledge_prompt_text is not None:
+        updates["knowledge_draft_prompt_text"] = knowledge_prompt_text
+
+    try:
+        if updates:
+            web_app.persist_runtime_settings(updates, partial=True)
+        report = web_app.masked_runtime_settings()
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if as_json or updates:
+        click.echo(json.dumps(report, ensure_ascii=False, indent=2))
+        return
+
+    for key, value in report.items():
+        click.echo(f"{key}: {value}")
 
 
 @main.command("capture")
@@ -1632,8 +1770,13 @@ def audio_command(
 def doctor_command(as_json: bool) -> None:
     """检查依赖和云端接口配置状态。"""
     subtitle_auth_configured = web_app.platform_auth_configured("Unknown")
+    settings = web_app.current_runtime_settings()
     report = {
+        "settings_path": settings["settings_path"],
+        "settings_dir": settings["settings_dir"],
         "download_dir": web_app.DOWNLOAD_DIR,
+        "download_root_dir": settings["download_root_dir"],
+        "download_root_locked": settings["download_root_locked"],
         "ffmpeg_bin": web_app.FFMPEG_BIN,
         "ffmpeg_found": shutil.which(web_app.FFMPEG_BIN) is not None,
         "yt_dlp_found": shutil.which("yt-dlp") is not None,
@@ -1644,24 +1787,31 @@ def doctor_command(as_json: bool) -> None:
         "douyin_auth_configured": web_app.platform_auth_configured("Douyin"),
         "ytdlp_remote_components": list(web_app.YTDLP_REMOTE_COMPONENTS),
         "transcription_enabled": web_app.ENABLE_TRANSCRIPTION,
+        "openrouter_base_url": web_app.OPENROUTER_BASE_URL,
         "transcription_model": web_app.OPENROUTER_TRANSCRIPTION_MODEL,
         "openrouter_key_configured": bool(web_app.transcribe_audio.__globals__.get("OPENROUTER_API_KEY")),
         "cleanup_enabled": web_app.AI_CLEANUP_ENABLED,
+        "cleanup_base_url": web_app.AI_CLEANUP_BASE_URL,
         "cleanup_model": web_app.AI_CLEANUP_MODEL,
         "cleanup_key_configured": bool(web_app.cleanup_transcript.__globals__.get("AI_CLEANUP_API_KEY")),
         "cleanup_prompt_file": web_app.AI_CLEANUP_PROMPT_FILE,
+        "cleanup_prompt_source": settings["ai_cleanup_prompt_source"],
         "cleanup_prompt_exists": Path(web_app.AI_CLEANUP_PROMPT_FILE).exists(),
         "article_enabled": web_app.ENABLE_ARTICLE_DRAFT,
+        "article_base_url": web_app.ARTICLE_DRAFT_BASE_URL,
         "article_model": web_app.ARTICLE_DRAFT_MODEL,
         "article_key_configured": bool(
             web_app.generate_ai_article_draft.__globals__.get("ARTICLE_DRAFT_API_KEY")
         ),
         "article_prompt_file": web_app.ARTICLE_DRAFT_PROMPT_FILE,
+        "article_prompt_source": settings["article_draft_prompt_source"],
         "article_prompt_exists": Path(web_app.ARTICLE_DRAFT_PROMPT_FILE).exists(),
         "knowledge_enabled": cleanup_backend.ENABLE_KNOWLEDGE_DRAFT,
+        "knowledge_base_url": cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL,
         "knowledge_model": cleanup_backend.KNOWLEDGE_DRAFT_MODEL,
         "knowledge_key_configured": bool(cleanup_backend.KNOWLEDGE_DRAFT_API_KEY),
         "knowledge_prompt_file": cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE,
+        "knowledge_prompt_source": settings["knowledge_draft_prompt_source"],
         "knowledge_prompt_exists": Path(cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE).exists(),
         "cookies_path": web_app.COOKIES_PATH or None,
         "cookies_exists": bool(web_app.COOKIES_PATH) and Path(web_app.COOKIES_PATH).exists(),

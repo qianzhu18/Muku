@@ -6,7 +6,7 @@
       name="viewport"
       content="width=device-width, initial-scale=1, viewport-fit=cover"
     />
-    <meta name="theme-color" content="#fafaf9" />
+    <meta name="theme-color" content="#0f1110" />
     <link
       rel="icon"
       href="https://imagehost.qianzhu.online/api/rfile/千逐（卡通版）.jpg"
@@ -15,97 +15,316 @@
     <title>{{ app_title }}</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link
-      href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&display=swap"
+      href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=Instrument+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
     <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
   </head>
   <body>
+    <div id="settings-backdrop" class="settings-backdrop"></div>
+
+    <aside id="settings-drawer" class="settings-drawer" aria-hidden="true">
+      <div class="settings-drawer-shell">
+        <div class="drawer-header">
+          <div>
+            <p class="eyebrow">Settings</p>
+            <h2>服务配置中心</h2>
+            <p>
+              部署完成后，在这里保存默认下载目录、模型、服务地址和提示词。面向本地或私有部署，不建议作为公网多人共用面板。
+            </p>
+          </div>
+          <button id="settings-close" type="button" class="icon-button">关闭</button>
+        </div>
+
+        <form id="settings-form" class="settings-form">
+          <div class="settings-meta">
+            <div id="settings-file-hint"></div>
+            <div id="settings-root-hint"></div>
+          </div>
+
+          <details class="settings-section" open>
+            <summary>存储与转写</summary>
+            <div class="settings-section-body">
+              <div class="settings-grid">
+                <div class="field">
+                  <label for="settings-download-dir">默认下载目录</label>
+                  <input id="settings-download-dir" type="text" />
+                </div>
+                <div class="field">
+                  <label for="settings-openrouter-base-url">转写 Base URL</label>
+                  <input id="settings-openrouter-base-url" type="text" />
+                </div>
+                <div class="field">
+                  <label for="settings-openrouter-api-key">转写 API Key</label>
+                  <input id="settings-openrouter-api-key" type="password" />
+                </div>
+                <div class="field">
+                  <label for="settings-openrouter-transcription-model">转写模型</label>
+                  <input id="settings-openrouter-transcription-model" type="text" />
+                </div>
+                <div class="field">
+                  <label for="settings-openrouter-site-url">HTTP-Referer</label>
+                  <input id="settings-openrouter-site-url" type="text" />
+                </div>
+                <div class="field">
+                  <label for="settings-openrouter-app-name">X-Title</label>
+                  <input id="settings-openrouter-app-name" type="text" />
+                </div>
+                <div class="field">
+                  <label for="settings-openrouter-article-model">OpenRouter 解析稿兜底模型</label>
+                  <input id="settings-openrouter-article-model" type="text" />
+                </div>
+              </div>
+            </div>
+          </details>
+
+          <details class="settings-section" open>
+            <summary>清洗稿服务</summary>
+            <div class="settings-section-body">
+              <label class="switch-line" for="settings-enable-cleanup">
+                <input id="settings-enable-cleanup" type="checkbox" />
+                启用 AI 清洗
+              </label>
+              <div class="settings-grid">
+                <div class="field">
+                  <label for="settings-cleanup-base-url">清洗 Base URL</label>
+                  <input id="settings-cleanup-base-url" type="text" />
+                </div>
+                <div class="field">
+                  <label for="settings-cleanup-api-key">清洗 API Key</label>
+                  <input id="settings-cleanup-api-key" type="password" />
+                </div>
+                <div class="field">
+                  <label for="settings-cleanup-model">清洗模型</label>
+                  <input id="settings-cleanup-model" type="text" />
+                </div>
+              </div>
+              <div class="field">
+                <label for="settings-cleanup-prompt-text">清洗提示词（留空则回退到文件）</label>
+                <textarea id="settings-cleanup-prompt-text" rows="6"></textarea>
+              </div>
+            </div>
+          </details>
+
+          <details class="settings-section">
+            <summary>解析稿服务</summary>
+            <div class="settings-section-body">
+              <label class="switch-line" for="settings-enable-article">
+                <input id="settings-enable-article" type="checkbox" />
+                启用解析稿生成
+              </label>
+              <div class="settings-grid">
+                <div class="field">
+                  <label for="settings-article-base-url">解析稿 Base URL</label>
+                  <input id="settings-article-base-url" type="text" />
+                </div>
+                <div class="field">
+                  <label for="settings-article-api-key">解析稿 API Key</label>
+                  <input id="settings-article-api-key" type="password" />
+                </div>
+                <div class="field">
+                  <label for="settings-article-model">解析稿模型</label>
+                  <input id="settings-article-model" type="text" />
+                </div>
+              </div>
+              <div class="field">
+                <label for="settings-article-prompt-text">解析稿提示词（留空则回退到文件）</label>
+                <textarea id="settings-article-prompt-text" rows="6"></textarea>
+              </div>
+            </div>
+          </details>
+
+          <details class="settings-section">
+            <summary>知识库整理服务</summary>
+            <div class="settings-section-body">
+              <label class="switch-line" for="settings-enable-knowledge">
+                <input id="settings-enable-knowledge" type="checkbox" />
+                启用知识库整理
+              </label>
+              <div class="settings-grid">
+                <div class="field">
+                  <label for="settings-knowledge-base-url">知识库 Base URL</label>
+                  <input id="settings-knowledge-base-url" type="text" />
+                </div>
+                <div class="field">
+                  <label for="settings-knowledge-api-key">知识库 API Key</label>
+                  <input id="settings-knowledge-api-key" type="password" />
+                </div>
+                <div class="field">
+                  <label for="settings-knowledge-model">知识库模型</label>
+                  <input id="settings-knowledge-model" type="text" />
+                </div>
+              </div>
+              <div class="field">
+                <label for="settings-knowledge-prompt-text">知识库提示词（留空则回退到文件）</label>
+                <textarea id="settings-knowledge-prompt-text" rows="6"></textarea>
+              </div>
+            </div>
+          </details>
+
+          <div class="settings-actions">
+            <span id="settings-status" class="field-help"></span>
+            <button type="submit" id="save-settings-btn" class="btn-primary">保存配置</button>
+          </div>
+        </form>
+      </div>
+    </aside>
+
     <main class="shell">
       <header class="header">
         <div class="brand">
           <img
             src="https://imagehost.qianzhu.online/api/rfile/千逐（卡通版）.jpg"
             class="profile-avatar"
-            alt="Qianzhu"
+            alt="Muku"
           />
-          <h1>Downloader by Qianzhu</h1>
+          <div class="brand-copy">
+            <p class="eyebrow">Video to Markdown Workspace</p>
+            <h1>幕库 Muku</h1>
+            <p>把 Bilibili、YouTube、Douyin 的高密度内容，收成你自己的 Markdown 知识库。</p>
+          </div>
         </div>
-        <nav>
+        <div class="header-actions">
+          <button id="settings-toggle" type="button" class="nav-button">设置</button>
           <a href="https://blog.qianzhu.me/" target="_blank" class="nav-link">
-            📖 使用教程
+            使用教程
           </a>
-        </nav>
+        </div>
       </header>
 
-      <section class="card">
-        <div class="card-header">
-          <h2>新建任务</h2>
-          <p>支持 YouTube、Bilibili、Douyin 等主流平台。可直接粘贴原始链接或平台分享文案。现在分成三种明确模式：最高画质视频、MP3 音频、Markdown 逐字稿。</p>
-        </div>
-
-        <form id="download-form">
-          <div class="field">
-            <label for="url">视频链接或分享文案</label>
-            <textarea
-              id="url"
-              name="url"
-              rows="3"
-              placeholder="在此粘贴链接或分享文案..."
-              required
-            ></textarea>
-          </div>
-
-          <div
-            class="field"
-            style="display: grid; grid-template-columns: 1fr 1fr; gap: 16px;"
-          >
-            <div>
-              <label for="preset">下载格式</label>
-              <select id="preset" name="preset"></select>
+      <section class="workspace">
+        <div class="primary-column">
+          <section class="card task-form-card">
+            <div class="card-header">
+              <h2>新建任务</h2>
+              <p>左侧发任务，右侧看队列和详情，设置收进右上角抽屉。</p>
             </div>
-            <div style="display: flex; flex-direction: column; gap: 10px; padding-top: 24px;">
-              <div style="display: flex; align-items: center;">
-                <input type="checkbox" id="use-cookies" style="width: auto; margin-right: 8px;" />
-                <label for="use-cookies" style="margin: 0; cursor: pointer;">
-                  启用 Cookies (`cookies.txt` / 浏览器登录态)
-                </label>
+
+            <div class="compact-overview">
+              <article class="overview-chip">
+                <span>默认下载目录</span>
+                <strong id="summary-download-dir">-</strong>
+              </article>
+              <article class="overview-chip">
+                <span>转写模型</span>
+                <strong id="summary-model">-</strong>
+              </article>
+              <article class="overview-chip">
+                <span>平台登录态</span>
+                <strong id="summary-auth">-</strong>
+              </article>
+            </div>
+
+            <form id="download-form">
+              <div class="form-scroll">
+                <div class="form-layout">
+                  <div class="field field-url">
+                    <label for="url">视频链接或分享文案</label>
+                    <textarea
+                      id="url"
+                      name="url"
+                      rows="3"
+                      placeholder="在此粘贴链接或分享文案..."
+                      required
+                    ></textarea>
+                  </div>
+
+                  <div class="field field-preset">
+                    <label for="preset">下载格式</label>
+                    <select id="preset" name="preset"></select>
+                  </div>
+
+                  <div class="field checkbox-field field-login">
+                    <label for="use-cookies">登录态</label>
+                    <label class="switch-line" for="use-cookies">
+                      <input type="checkbox" id="use-cookies" />
+                      启用 Cookies（`cookies.txt` / 浏览器登录态）
+                    </label>
+                  </div>
+
+                  <div class="field field-download-dir">
+                    <label for="download-dir">本次保存到（可选）</label>
+                    <input
+                      id="download-dir"
+                      name="download-dir"
+                      type="text"
+                      placeholder="留空则使用默认下载目录"
+                    />
+                    <p class="field-help" id="download-dir-hint">
+                      留空时会写入默认下载目录。
+                    </p>
+                  </div>
+                </div>
+
+                <div class="field-note-stack">
+                  <p id="mode-hint" class="field-help">
+                    `Markdown 逐字稿` 会先试平台字幕，失败后自动回退到 MP3 转写。
+                  </p>
+                  <p id="cookies-hint" class="field-help">
+                    未检测到 Cookies 时，YouTube、Douyin 和部分 B 站视频可能受限。
+                  </p>
+                </div>
               </div>
-            </div>
-          </div>
 
-          <p id="mode-hint" style="margin: -6px 0 16px; font-size: 0.84rem; color: var(--text-sub);">
-            `Markdown 逐字稿` 模式会先尝试直接提取平台字幕；如果拿不到，再自动回退到 MP3 转写。
-          </p>
-          <p id="cookies-hint" style="margin: -10px 0 16px; font-size: 0.82rem; color: var(--text-sub);">
-            当前未检测到 Cookies 配置。YouTube、Douyin 和部分 B 站视频在受限场景下可能需要平台登录态。
-          </p>
-
-          <button type="submit" id="start-btn" class="btn-primary">开始下载</button>
-        </form>
-      </section>
-
-      <section class="card">
-        <div
-          class="card-header"
-          style="display: flex; justify-content: space-between; align-items: center;"
-        >
-          <h2>任务队列</h2>
-          <span id="queue-count" style="font-size: 0.8rem; color: var(--text-sub);">
-            0 active
-          </span>
+              <div class="form-actions">
+                <button type="submit" id="start-btn" class="btn-primary">开始下载视频</button>
+              </div>
+            </form>
+          </section>
         </div>
-        <ul id="task-list" class="task-list">
-          <li style="padding: 20px; text-align: center; color: var(--text-light); font-size: 0.9rem;">
-            暂无下载任务，去添加一个吧 🍃
-          </li>
-        </ul>
+
+        <aside class="monitor-column">
+          <section class="card monitor-card">
+            <div class="monitor-head">
+              <div class="card-header compact">
+                <h2>下载观察台</h2>
+                <p>队列在这里，单条任务详情也在这里。</p>
+              </div>
+              <span id="queue-count" class="queue-indicator">空闲</span>
+            </div>
+
+            <div class="monitor-stats">
+              <article class="stat-tile">
+                <span>运行中</span>
+                <strong id="active-count">0</strong>
+              </article>
+              <article class="stat-tile">
+                <span>已完成</span>
+                <strong id="done-count">0</strong>
+              </article>
+              <article class="stat-tile">
+                <span>失败</span>
+                <strong id="failed-count">0</strong>
+              </article>
+            </div>
+
+            <div class="monitor-tabs" role="tablist" aria-label="任务观察面板">
+              <button type="button" class="monitor-tab is-active" data-panel-target="queue">队列</button>
+              <button type="button" class="monitor-tab" data-panel-target="detail">观察</button>
+            </div>
+
+            <div id="queue-panel" class="monitor-panel is-active">
+              <ul id="task-list" class="task-list">
+                <li class="empty-state">
+                  暂无下载任务，去左侧添加一个吧。
+                </li>
+              </ul>
+            </div>
+
+            <div id="detail-panel" class="monitor-panel">
+              <div id="detail-empty" class="detail-empty">
+                选中右侧一条任务，就能在这里观察来源链接、模式、输出路径和报错详情。
+              </div>
+              <div id="task-detail-content" class="task-detail-content"></div>
+            </div>
+          </section>
+        </aside>
       </section>
 
       <footer class="site-footer">
         <p>
-          Designed with <span style="color: #e4572e;">&hearts;</span> by
-          <a href="https://blog.qianzhu.me/" target="_blank">Qianzhu (千逐)</a>
+          Built for local knowledge capture with
+          <a href="https://blog.qianzhu.me/" target="_blank">Qianzhu</a>
         </p>
       </footer>
     </main>

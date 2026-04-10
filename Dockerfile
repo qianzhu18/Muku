@@ -38,6 +38,8 @@ RUN set -e; \
     pip install --no-cache-dir --no-deps .
 
 ENV DOWNLOAD_DIR=/downloads
+ENV DOWNLOAD_ROOT_DIR=/downloads
+ENV VIDEO_DOWNLOADE_CONFIG_DIR=/config
 EXPOSE 8080
 HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\", \"8080\")}/', timeout=5)"
 

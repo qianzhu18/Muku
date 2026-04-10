@@ -43,6 +43,7 @@ AI_CLEANUP_PROMPT_FILE = os.environ.get(
     "AI_CLEANUP_PROMPT_FILE",
     _default_prompt_path("角色提示词.md"),
 ).strip()
+AI_CLEANUP_PROMPT_TEXT = os.environ.get("AI_CLEANUP_PROMPT_TEXT", "")
 
 ENABLE_ARTICLE_DRAFT = os.environ.get("ENABLE_ARTICLE_DRAFT", "true").strip().lower() in {
     "1",
@@ -60,6 +61,7 @@ ARTICLE_DRAFT_PROMPT_FILE = os.environ.get(
     "ARTICLE_DRAFT_PROMPT_FILE",
     _default_prompt_path("解析提示词.md"),
 ).strip()
+ARTICLE_DRAFT_PROMPT_TEXT = os.environ.get("ARTICLE_DRAFT_PROMPT_TEXT", "")
 
 ENABLE_KNOWLEDGE_DRAFT = os.environ.get("ENABLE_KNOWLEDGE_DRAFT", "true").strip().lower() in {
     "1",
@@ -77,6 +79,7 @@ KNOWLEDGE_DRAFT_PROMPT_FILE = os.environ.get(
     "KNOWLEDGE_DRAFT_PROMPT_FILE",
     _default_prompt_path("知识库提示词.md"),
 ).strip()
+KNOWLEDGE_DRAFT_PROMPT_TEXT = os.environ.get("KNOWLEDGE_DRAFT_PROMPT_TEXT", "")
 
 AI_TEXT_TIMEOUT_SECONDS = int(os.environ.get("AI_TEXT_TIMEOUT_SECONDS", "300"))
 AI_TEXT_MAX_RETRIES = int(os.environ.get("AI_TEXT_MAX_RETRIES", "2"))
@@ -159,7 +162,11 @@ def generate_knowledge_draft(
 
 
 def build_cleanup_payload(*, text: str, title: str, source_url: str) -> dict:
-    prompt = _load_prompt(AI_CLEANUP_PROMPT_FILE, "AI cleanup prompt")
+    prompt = _load_prompt(
+        AI_CLEANUP_PROMPT_FILE,
+        "AI cleanup prompt",
+        inline_text=AI_CLEANUP_PROMPT_TEXT,
+    )
     return {
         "model": AI_CLEANUP_MODEL,
         "temperature": 0.2,
@@ -188,7 +195,11 @@ def build_article_payload(
     source_url: str,
     platform: str,
 ) -> dict:
-    prompt = _load_prompt(ARTICLE_DRAFT_PROMPT_FILE, "Article draft prompt")
+    prompt = _load_prompt(
+        ARTICLE_DRAFT_PROMPT_FILE,
+        "Article draft prompt",
+        inline_text=ARTICLE_DRAFT_PROMPT_TEXT,
+    )
     return {
         "model": ARTICLE_DRAFT_MODEL,
         "temperature": 0.35,
@@ -217,7 +228,11 @@ def build_knowledge_payload(
     source_url: str,
     platform: str,
 ) -> dict:
-    prompt = _load_prompt(KNOWLEDGE_DRAFT_PROMPT_FILE, "Knowledge draft prompt")
+    prompt = _load_prompt(
+        KNOWLEDGE_DRAFT_PROMPT_FILE,
+        "Knowledge draft prompt",
+        inline_text=KNOWLEDGE_DRAFT_PROMPT_TEXT,
+    )
     return {
         "model": KNOWLEDGE_DRAFT_MODEL,
         "temperature": 0.25,
@@ -239,7 +254,9 @@ def build_knowledge_payload(
     }
 
 
-def _load_prompt(prompt_path_str: str, prompt_label: str) -> str:
+def _load_prompt(prompt_path_str: str, prompt_label: str, *, inline_text: str = "") -> str:
+    if inline_text.strip():
+        return inline_text.strip()
     prompt_path = Path(prompt_path_str)
     if not prompt_path.exists():
         raise RuntimeError(f"{prompt_label} file not found: {prompt_path}")

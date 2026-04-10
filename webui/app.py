@@ -17,6 +17,8 @@ from pathlib import Path
 from flask import Flask, jsonify, render_template, request
 
 try:
+    from . import openai_compatible_cleanup as cleanup_backend
+    from . import openrouter_backends as openrouter_backend
     from .douyin_provider import DouyinDownloadError, download_douyin_media
     from .env_config import load_env_file
     from .openai_compatible_cleanup import (
@@ -31,15 +33,21 @@ try:
         ARTICLE_DRAFT_PROMPT_FILE,
         ARTICLE_DRAFT_PROVIDER_LABEL,
         ENABLE_ARTICLE_DRAFT,
+        ENABLE_KNOWLEDGE_DRAFT,
         cleanup_transcript,
         generate_article_draft as generate_ai_article_draft,
     )
     from .openrouter_backends import (
+        OPENROUTER_APP_NAME,
         OPENROUTER_ARTICLE_MODEL,
+        OPENROUTER_BASE_URL,
+        OPENROUTER_SITE_URL,
         OPENROUTER_TRANSCRIPTION_MODEL,
         generate_article_draft as generate_openrouter_article_draft,
         transcribe_audio,
     )
+    from .settings_store import config_dir as settings_config_dir
+    from .settings_store import load_settings, save_settings, settings_path
     from .transcript_pipeline import (
         build_artifact_paths,
         clean_transcript_text,
@@ -49,6 +57,8 @@ try:
         write_sidecar_files,
     )
 except ImportError:
+    import openai_compatible_cleanup as cleanup_backend
+    import openrouter_backends as openrouter_backend
     from douyin_provider import DouyinDownloadError, download_douyin_media
     from env_config import load_env_file
     from openai_compatible_cleanup import (
@@ -63,15 +73,21 @@ except ImportError:
         ARTICLE_DRAFT_PROMPT_FILE,
         ARTICLE_DRAFT_PROVIDER_LABEL,
         ENABLE_ARTICLE_DRAFT,
+        ENABLE_KNOWLEDGE_DRAFT,
         cleanup_transcript,
         generate_article_draft as generate_ai_article_draft,
     )
     from openrouter_backends import (
+        OPENROUTER_APP_NAME,
         OPENROUTER_ARTICLE_MODEL,
+        OPENROUTER_BASE_URL,
+        OPENROUTER_SITE_URL,
         OPENROUTER_TRANSCRIPTION_MODEL,
         generate_article_draft as generate_openrouter_article_draft,
         transcribe_audio,
     )
+    from settings_store import config_dir as settings_config_dir
+    from settings_store import load_settings, save_settings, settings_path
     from transcript_pipeline import (
         build_artifact_paths,
         clean_transcript_text,
@@ -95,8 +111,9 @@ def env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
-APP_TITLE = "Downloader by Qianzhu"
+APP_TITLE = "幕库 Muku"
 DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", str(Path.home() / "Downloads"))
+DOWNLOAD_ROOT_DIR = os.environ.get("DOWNLOAD_ROOT_DIR", "").strip()
 COOKIES_PATH = os.environ.get("COOKIES_PATH", "")
 COOKIES_FROM_BROWSER = os.environ.get("COOKIES_FROM_BROWSER", "").strip()
 YOUTUBE_COOKIES_PATH = os.environ.get("YOUTUBE_COOKIES_PATH", "").strip()
@@ -163,6 +180,38 @@ FORMAT_PRESETS = {
     },
 }
 
+ENV_DEFAULTS = {
+    "download_dir": DOWNLOAD_DIR,
+    "openrouter_base_url": OPENROUTER_BASE_URL,
+    "openrouter_api_key": openrouter_backend.OPENROUTER_API_KEY,
+    "openrouter_site_url": OPENROUTER_SITE_URL,
+    "openrouter_app_name": OPENROUTER_APP_NAME,
+    "openrouter_transcription_model": OPENROUTER_TRANSCRIPTION_MODEL,
+    "openrouter_article_model": OPENROUTER_ARTICLE_MODEL,
+    "enable_ai_cleanup": AI_CLEANUP_ENABLED,
+    "ai_cleanup_base_url": AI_CLEANUP_BASE_URL,
+    "ai_cleanup_api_key": cleanup_backend.AI_CLEANUP_API_KEY,
+    "ai_cleanup_model": AI_CLEANUP_MODEL,
+    "ai_cleanup_prompt_text": cleanup_backend.AI_CLEANUP_PROMPT_TEXT,
+    "enable_article_draft": ENABLE_ARTICLE_DRAFT,
+    "article_draft_base_url": ARTICLE_DRAFT_BASE_URL,
+    "article_draft_api_key": cleanup_backend.ARTICLE_DRAFT_API_KEY,
+    "article_draft_model": ARTICLE_DRAFT_MODEL,
+    "article_draft_prompt_text": cleanup_backend.ARTICLE_DRAFT_PROMPT_TEXT,
+    "enable_knowledge_draft": ENABLE_KNOWLEDGE_DRAFT,
+    "knowledge_draft_base_url": cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL,
+    "knowledge_draft_api_key": cleanup_backend.KNOWLEDGE_DRAFT_API_KEY,
+    "knowledge_draft_model": cleanup_backend.KNOWLEDGE_DRAFT_MODEL,
+    "knowledge_draft_prompt_text": cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_TEXT,
+}
+SECRET_SETTING_KEYS = {
+    "openrouter_api_key",
+    "ai_cleanup_api_key",
+    "article_draft_api_key",
+    "knowledge_draft_api_key",
+}
+LEGACY_APP_TITLES = {"Downloader by Qianzhu"}
+
 
 @dataclass
 class Job:
@@ -171,6 +220,7 @@ class Job:
     preset: str
     use_cookies: bool
     generate_transcript: bool
+    output_dir: str | None = None
     created_at: float = field(default_factory=time.time)
     title: str = "Fetching info..."
     status: str = "Queued"
@@ -190,6 +240,240 @@ app = Flask(__name__)
 jobs: dict[str, Job] = {}
 jobs_lock = threading.Lock()
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+
+
+def _coerce_bool(value: object, *, field_name: str) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"1", "true", "yes", "on"}:
+            return True
+        if lowered in {"0", "false", "no", "off"}:
+            return False
+    raise ValueError(f"{field_name} 必须是布尔值。")
+
+
+def download_root_path() -> Path | None:
+    if not DOWNLOAD_ROOT_DIR:
+        return None
+    return Path(DOWNLOAD_ROOT_DIR).expanduser().resolve()
+
+
+def resolve_download_dir(value: str | None = None, *, create: bool = False) -> Path:
+    raw_value = (value or "").strip()
+    candidate = Path(raw_value) if raw_value else Path(DOWNLOAD_DIR)
+    root_dir = download_root_path()
+
+    if root_dir is not None and not candidate.is_absolute():
+        candidate = root_dir / candidate
+
+    resolved = candidate.expanduser().resolve()
+    if root_dir is not None:
+        try:
+            resolved.relative_to(root_dir)
+        except ValueError as exc:
+            raise ValueError(f"下载目录必须位于 {root_dir} 内。") from exc
+
+    if create:
+        resolved.mkdir(parents=True, exist_ok=True)
+    return resolved
+
+
+def _normalize_runtime_settings(payload: dict, *, partial: bool) -> dict:
+    normalized: dict[str, object] = {}
+
+    string_fields = {
+        "openrouter_base_url",
+        "openrouter_api_key",
+        "openrouter_site_url",
+        "openrouter_app_name",
+        "openrouter_transcription_model",
+        "openrouter_article_model",
+        "ai_cleanup_base_url",
+        "ai_cleanup_api_key",
+        "ai_cleanup_model",
+        "article_draft_base_url",
+        "article_draft_api_key",
+        "article_draft_model",
+        "knowledge_draft_base_url",
+        "knowledge_draft_api_key",
+        "knowledge_draft_model",
+    }
+    bool_fields = {
+        "enable_ai_cleanup",
+        "enable_article_draft",
+        "enable_knowledge_draft",
+    }
+    prompt_fields = {
+        "ai_cleanup_prompt_text",
+        "article_draft_prompt_text",
+        "knowledge_draft_prompt_text",
+    }
+
+    if "download_dir" in payload:
+        raw_value = str(payload.get("download_dir") or "").strip()
+        normalized["download_dir"] = str(resolve_download_dir(raw_value)) if raw_value else ""
+    elif not partial:
+        normalized["download_dir"] = ""
+
+    for field in string_fields:
+        if field in payload:
+            normalized[field] = str(payload.get(field) or "").strip()
+        elif not partial:
+            normalized[field] = ""
+
+    for field in prompt_fields:
+        if field in payload:
+            normalized[field] = str(payload.get(field) or "").strip()
+        elif not partial:
+            normalized[field] = ""
+
+    for field in bool_fields:
+        if field in payload:
+            normalized[field] = _coerce_bool(payload.get(field), field_name=field)
+        elif not partial:
+            normalized[field] = bool(ENV_DEFAULTS[field])
+
+    return normalized
+
+
+def apply_runtime_settings(saved_settings: dict | None = None) -> dict:
+    global DOWNLOAD_DIR
+    global OPENROUTER_BASE_URL, OPENROUTER_SITE_URL, OPENROUTER_APP_NAME
+    global OPENROUTER_TRANSCRIPTION_MODEL, OPENROUTER_ARTICLE_MODEL
+    global AI_CLEANUP_ENABLED, AI_CLEANUP_BASE_URL, AI_CLEANUP_MODEL
+    global ENABLE_ARTICLE_DRAFT, ARTICLE_DRAFT_BASE_URL, ARTICLE_DRAFT_MODEL
+    global ENABLE_KNOWLEDGE_DRAFT
+
+    settings = saved_settings if saved_settings is not None else load_settings()
+
+    def value_for(key: str) -> object:
+        if key in settings:
+            return settings[key]
+        return ENV_DEFAULTS[key]
+
+    download_value = str(value_for("download_dir") or "").strip()
+    DOWNLOAD_DIR = str(resolve_download_dir(download_value)) if download_value else str(
+        resolve_download_dir(str(ENV_DEFAULTS["download_dir"]))
+    )
+
+    openrouter_backend.OPENROUTER_BASE_URL = str(value_for("openrouter_base_url") or "").strip()
+    openrouter_backend.OPENROUTER_API_KEY = str(value_for("openrouter_api_key") or "").strip()
+    openrouter_backend.OPENROUTER_SITE_URL = str(value_for("openrouter_site_url") or "").strip()
+    openrouter_app_name = str(value_for("openrouter_app_name") or "").strip()
+    if openrouter_app_name in LEGACY_APP_TITLES:
+        openrouter_app_name = APP_TITLE
+    openrouter_backend.OPENROUTER_APP_NAME = openrouter_app_name
+    openrouter_backend.OPENROUTER_TRANSCRIPTION_MODEL = str(
+        value_for("openrouter_transcription_model") or ""
+    ).strip()
+    openrouter_backend.OPENROUTER_ARTICLE_MODEL = str(
+        value_for("openrouter_article_model") or ""
+    ).strip()
+
+    OPENROUTER_BASE_URL = openrouter_backend.OPENROUTER_BASE_URL
+    OPENROUTER_SITE_URL = openrouter_backend.OPENROUTER_SITE_URL
+    OPENROUTER_APP_NAME = openrouter_backend.OPENROUTER_APP_NAME
+    OPENROUTER_TRANSCRIPTION_MODEL = openrouter_backend.OPENROUTER_TRANSCRIPTION_MODEL
+    OPENROUTER_ARTICLE_MODEL = openrouter_backend.OPENROUTER_ARTICLE_MODEL
+
+    cleanup_backend.AI_CLEANUP_ENABLED = bool(value_for("enable_ai_cleanup"))
+    cleanup_backend.AI_CLEANUP_BASE_URL = str(value_for("ai_cleanup_base_url") or "").rstrip("/")
+    cleanup_backend.AI_CLEANUP_API_KEY = str(value_for("ai_cleanup_api_key") or "").strip()
+    cleanup_backend.AI_CLEANUP_MODEL = str(value_for("ai_cleanup_model") or "").strip()
+    cleanup_backend.AI_CLEANUP_PROMPT_TEXT = str(value_for("ai_cleanup_prompt_text") or "")
+
+    cleanup_backend.ENABLE_ARTICLE_DRAFT = bool(value_for("enable_article_draft"))
+    cleanup_backend.ARTICLE_DRAFT_BASE_URL = str(value_for("article_draft_base_url") or "").rstrip("/")
+    cleanup_backend.ARTICLE_DRAFT_API_KEY = str(value_for("article_draft_api_key") or "").strip()
+    cleanup_backend.ARTICLE_DRAFT_MODEL = str(value_for("article_draft_model") or "").strip()
+    cleanup_backend.ARTICLE_DRAFT_PROMPT_TEXT = str(value_for("article_draft_prompt_text") or "")
+
+    cleanup_backend.ENABLE_KNOWLEDGE_DRAFT = bool(value_for("enable_knowledge_draft"))
+    cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL = str(value_for("knowledge_draft_base_url") or "").rstrip("/")
+    cleanup_backend.KNOWLEDGE_DRAFT_API_KEY = str(value_for("knowledge_draft_api_key") or "").strip()
+    cleanup_backend.KNOWLEDGE_DRAFT_MODEL = str(value_for("knowledge_draft_model") or "").strip()
+    cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_TEXT = str(value_for("knowledge_draft_prompt_text") or "")
+
+    AI_CLEANUP_ENABLED = cleanup_backend.AI_CLEANUP_ENABLED
+    AI_CLEANUP_BASE_URL = cleanup_backend.AI_CLEANUP_BASE_URL
+    AI_CLEANUP_MODEL = cleanup_backend.AI_CLEANUP_MODEL
+    ENABLE_ARTICLE_DRAFT = cleanup_backend.ENABLE_ARTICLE_DRAFT
+    ARTICLE_DRAFT_BASE_URL = cleanup_backend.ARTICLE_DRAFT_BASE_URL
+    ARTICLE_DRAFT_MODEL = cleanup_backend.ARTICLE_DRAFT_MODEL
+    ENABLE_KNOWLEDGE_DRAFT = cleanup_backend.ENABLE_KNOWLEDGE_DRAFT
+
+    return current_runtime_settings()
+
+
+def current_runtime_settings() -> dict:
+    return {
+        "settings_path": str(settings_path()),
+        "settings_dir": str(settings_config_dir()),
+        "download_dir": DOWNLOAD_DIR,
+        "download_root_dir": str(download_root_path()) if download_root_path() else None,
+        "download_root_locked": bool(download_root_path()),
+        "openrouter_base_url": openrouter_backend.OPENROUTER_BASE_URL,
+        "openrouter_api_key": openrouter_backend.OPENROUTER_API_KEY,
+        "openrouter_site_url": openrouter_backend.OPENROUTER_SITE_URL,
+        "openrouter_app_name": openrouter_backend.OPENROUTER_APP_NAME,
+        "openrouter_transcription_model": openrouter_backend.OPENROUTER_TRANSCRIPTION_MODEL,
+        "openrouter_article_model": openrouter_backend.OPENROUTER_ARTICLE_MODEL,
+        "enable_ai_cleanup": cleanup_backend.AI_CLEANUP_ENABLED,
+        "ai_cleanup_base_url": cleanup_backend.AI_CLEANUP_BASE_URL,
+        "ai_cleanup_api_key": cleanup_backend.AI_CLEANUP_API_KEY,
+        "ai_cleanup_model": cleanup_backend.AI_CLEANUP_MODEL,
+        "ai_cleanup_prompt_file": cleanup_backend.AI_CLEANUP_PROMPT_FILE,
+        "ai_cleanup_prompt_text": cleanup_backend.AI_CLEANUP_PROMPT_TEXT,
+        "ai_cleanup_prompt_source": (
+            "inline" if cleanup_backend.AI_CLEANUP_PROMPT_TEXT.strip() else "file"
+        ),
+        "enable_article_draft": cleanup_backend.ENABLE_ARTICLE_DRAFT,
+        "article_draft_base_url": cleanup_backend.ARTICLE_DRAFT_BASE_URL,
+        "article_draft_api_key": cleanup_backend.ARTICLE_DRAFT_API_KEY,
+        "article_draft_model": cleanup_backend.ARTICLE_DRAFT_MODEL,
+        "article_draft_prompt_file": cleanup_backend.ARTICLE_DRAFT_PROMPT_FILE,
+        "article_draft_prompt_text": cleanup_backend.ARTICLE_DRAFT_PROMPT_TEXT,
+        "article_draft_prompt_source": (
+            "inline" if cleanup_backend.ARTICLE_DRAFT_PROMPT_TEXT.strip() else "file"
+        ),
+        "enable_knowledge_draft": cleanup_backend.ENABLE_KNOWLEDGE_DRAFT,
+        "knowledge_draft_base_url": cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL,
+        "knowledge_draft_api_key": cleanup_backend.KNOWLEDGE_DRAFT_API_KEY,
+        "knowledge_draft_model": cleanup_backend.KNOWLEDGE_DRAFT_MODEL,
+        "knowledge_draft_prompt_file": cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE,
+        "knowledge_draft_prompt_text": cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_TEXT,
+        "knowledge_draft_prompt_source": (
+            "inline" if cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_TEXT.strip() else "file"
+        ),
+    }
+
+
+def persist_runtime_settings(payload: dict, *, partial: bool = True) -> dict:
+    current_settings = load_settings()
+    normalized = _normalize_runtime_settings(payload, partial=partial)
+    merged = dict(current_settings)
+    merged.update(normalized)
+    save_settings(merged)
+    return apply_runtime_settings(merged)
+
+
+def masked_runtime_settings() -> dict:
+    payload = current_runtime_settings()
+    for key in SECRET_SETTING_KEYS:
+        secret = str(payload.get(key) or "")
+        payload[f"{key}_configured"] = bool(secret)
+        if not secret:
+            payload[key] = ""
+        elif len(secret) <= 8:
+            payload[key] = "****"
+        else:
+            payload[key] = f"{secret[:4]}...{secret[-4:]}"
+    return payload
+
+
+apply_runtime_settings()
 
 
 class YtdlpLogger:
@@ -530,11 +814,12 @@ def collect_url_inputs(text: str) -> list[str]:
     return [stripped] if stripped else []
 
 
-def build_artifact_base_path(info: dict) -> Path:
+def build_artifact_base_path(info: dict, *, base_dir: str | Path | None = None) -> Path:
     title = info.get("title") or info.get("id") or "Untitled"
     media_id = info.get("id") or uuid.uuid4().hex[:8]
     stem = sanitize_output_component(f"{title} [{media_id}]")
-    return Path(DOWNLOAD_DIR) / stem / stem
+    target_dir = Path(base_dir) if base_dir is not None else Path(DOWNLOAD_DIR)
+    return target_dir / stem / stem
 
 
 def build_subtitle_probe_options(job: Job, *, temp_dir: Path) -> dict:
@@ -692,7 +977,10 @@ def try_extract_direct_subtitles(job: Job) -> dict | None:
             if not raw_text:
                 continue
             return {
-                "artifact_base_path": build_artifact_base_path(info),
+                "artifact_base_path": build_artifact_base_path(
+                    info,
+                    base_dir=job.output_dir or DOWNLOAD_DIR,
+                ),
                 "raw_text": raw_text,
                 "provider": "yt-dlp subtitles",
                 "model": f'{candidate["source"]} · {candidate["lang"]} · {candidate["ext"]}',
@@ -798,7 +1086,9 @@ def run_text_pipeline(
             article_error = str(exc)
             set_job_state(job, status=f"GLM article unavailable. Falling back to {OPENROUTER_ARTICLE_MODEL}...")
             try:
-                system_prompt = Path(ARTICLE_DRAFT_PROMPT_FILE).read_text(encoding="utf-8").strip()
+                system_prompt = cleanup_backend.ARTICLE_DRAFT_PROMPT_TEXT.strip()
+                if not system_prompt:
+                    system_prompt = Path(ARTICLE_DRAFT_PROMPT_FILE).read_text(encoding="utf-8").strip()
                 article_result = generate_openrouter_article_draft(
                     transcript_text=clean_text,
                     system_prompt=system_prompt,
@@ -830,11 +1120,17 @@ def run_text_pipeline(
             "cleanup_model": cleanup_model,
             "cleanup_base_url": AI_CLEANUP_BASE_URL,
             "cleanup_prompt_file": AI_CLEANUP_PROMPT_FILE,
+            "cleanup_prompt_source": (
+                "inline" if cleanup_backend.AI_CLEANUP_PROMPT_TEXT.strip() else "file"
+            ),
             "cleanup_error": cleanup_error,
             "article_provider": article_provider,
             "article_model": article_model,
             "article_base_url": ARTICLE_DRAFT_BASE_URL,
             "article_prompt_file": ARTICLE_DRAFT_PROMPT_FILE,
+            "article_prompt_source": (
+                "inline" if cleanup_backend.ARTICLE_DRAFT_PROMPT_TEXT.strip() else "file"
+            ),
             "article_error": article_error,
             "transcription_response": transcript_response,
             "cleanup_response": cleanup_response,
@@ -912,6 +1208,7 @@ def run_transcription_pipeline(job: Job, audio_path: Path, *, extra_meta: dict |
 
 
 def download_media(job: Job, preset_name: str) -> Path:
+    output_dir = Path(job.output_dir) if job.output_dir else resolve_download_dir()
     if detect_platform(job.url) == "Douyin" and job.use_cookies:
         cookie_options = resolve_cookie_options(job.url)
         if cookie_options:
@@ -920,7 +1217,7 @@ def download_media(job: Job, preset_name: str) -> Path:
                 result = download_douyin_media(
                     url=job.url,
                     preset_name=preset_name,
-                    output_dir=Path(DOWNLOAD_DIR),
+                    output_dir=output_dir,
                     cookie_options=cookie_options,
                     ffmpeg_bin=FFMPEG_BIN,
                     audio_bitrate="192k",
@@ -938,7 +1235,7 @@ def download_media(job: Job, preset_name: str) -> Path:
                 job.progress = 100
             return media_path
 
-    options = build_ydl_options(job, preset_name=preset_name)
+    options = build_ydl_options(job, preset_name=preset_name, base_dir=output_dir)
     selected_info: dict | None = None
     with yt_dlp.YoutubeDL(options) as ydl:
         try:
@@ -1018,7 +1315,7 @@ def run_transcript_job(job: Job) -> None:
 def run_job(job: Job) -> Job:
     try:
         set_job_state(job, status="Starting...")
-        Path(DOWNLOAD_DIR).mkdir(parents=True, exist_ok=True)
+        resolve_download_dir(job.output_dir, create=True)
         if job.preset == TRANSCRIPT_PRESET_NAME:
             run_transcript_job(job)
         else:
@@ -1047,15 +1344,14 @@ def worker(job_id: str) -> None:
     run_job(job)
 
 
-@app.route("/")
-def index():
-    cookies_configured = platform_auth_configured("Unknown")
-    config = {
+def frontend_config() -> dict:
+    settings = current_runtime_settings()
+    return {
         "presets": list(FORMAT_PRESETS.keys()),
         "defaultPreset": VIDEO_PRESET_NAME,
         "audioPreset": AUDIO_PRESET_NAME,
         "transcriptPreset": TRANSCRIPT_PRESET_NAME,
-        "cookiesConfigured": cookies_configured,
+        "cookiesConfigured": platform_auth_configured("Unknown"),
         "youtubeAuthConfigured": platform_auth_configured("YouTube"),
         "bilibiliAuthConfigured": platform_auth_configured("Bilibili"),
         "douyinAuthConfigured": platform_auth_configured("Douyin"),
@@ -1068,8 +1364,49 @@ def index():
         "articleDraftEnabled": ENABLE_ARTICLE_DRAFT,
         "articleDraftProvider": ARTICLE_DRAFT_PROVIDER_LABEL,
         "articleDraftModel": ARTICLE_DRAFT_MODEL,
+        "settings": settings,
     }
-    return render_template("index.html", app_title=APP_TITLE, config_json=json.dumps(config))
+
+
+@app.route("/")
+def index():
+    return render_template(
+        "index.html",
+        app_title=APP_TITLE,
+        config_json=json.dumps(frontend_config()),
+    )
+
+
+@app.route("/api/settings")
+def get_settings():
+    payload = current_runtime_settings()
+    payload.update(
+        {
+            "youtube_auth_configured": platform_auth_configured("YouTube"),
+            "bilibili_auth_configured": platform_auth_configured("Bilibili"),
+            "douyin_auth_configured": platform_auth_configured("Douyin"),
+        }
+    )
+    return jsonify(payload)
+
+
+@app.route("/api/settings", methods=["POST"])
+def update_settings():
+    data = request.json or {}
+    try:
+        settings = persist_runtime_settings(data, partial=False)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    payload = dict(settings)
+    payload.update(
+        {
+            "youtube_auth_configured": platform_auth_configured("YouTube"),
+            "bilibili_auth_configured": platform_auth_configured("Bilibili"),
+            "douyin_auth_configured": platform_auth_configured("Douyin"),
+        }
+    )
+    return jsonify(payload)
 
 
 @app.route("/api/start", methods=["POST"])
@@ -1082,6 +1419,7 @@ def start():
     preset = data.get("preset")
     use_cookies = bool(data.get("use_cookies"))
     generate_transcript = bool(data.get("generate_transcript"))
+    download_dir_raw = str(data.get("download_dir") or "").strip()
 
     if preset not in FORMAT_PRESETS:
         return jsonify({"error": "Invalid preset"}), 400
@@ -1090,11 +1428,16 @@ def start():
     elif generate_transcript and preset != AUDIO_PRESET_NAME:
         return jsonify({"error": "提取 Markdown 逐字稿前，请先选择 Best Audio (MP3)。"}), 400
 
+    try:
+        download_dir = str(resolve_download_dir(download_dir_raw)) if download_dir_raw else None
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
     added = 0
     with jobs_lock:
         for url in urls:
             job_id = uuid.uuid4().hex
-            job = Job(job_id, url, preset, use_cookies, generate_transcript)
+            job = Job(job_id, url, preset, use_cookies, generate_transcript, output_dir=download_dir)
             jobs[job_id] = job
             executor.submit(worker, job_id)
             added += 1
@@ -1121,6 +1464,7 @@ def tasks():
                     "transcript_path": job.transcript_path,
                     "provider": job.provider,
                     "preset": job.preset,
+                    "output_dir": job.output_dir,
                     "transcript_route": job.transcript_route,
                     "generate_transcript": job.generate_transcript,
                 }
