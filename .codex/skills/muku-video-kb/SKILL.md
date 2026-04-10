@@ -1,12 +1,14 @@
 ---
-name: video-downloade-cli
+name: muku-video-kb
 description: >
-  Use this skill when the user wants to process video or audio URLs, transcribe local audio,
-  generate transcript/article/knowledge assets, inspect sidecars, or drive this repository
-  through its CLI instead of the Web UI.
+  Use this skill when the user wants to turn knowledge-heavy video URLs or local audio
+  into Markdown transcript and knowledge-base assets through the Muku CLI instead of
+  driving the Web UI.
 ---
 
-# Video Downloade CLI
+# Muku Video KB
+
+幕库的目标是把知识视频收入本地 Markdown 知识库，而不是做一个通用下载器。
 
 优先使用这个仓库的 CLI，不要默认去驱动网页。
 
@@ -16,7 +18,6 @@ description: >
 video-downloade doctor --json
 video-downloade capture "https://www.bilibili.com/video/BVxxxx" --knowledge --json
 video-downloade capture "https://www.youtube.com/watch?v=..." --knowledge --json
-video-downloade download "https://www.douyin.com/video/1234567890" --json
 video-downloade audio "/path/to/file.mp3" --knowledge --json
 video-downloade artifacts "/path/to/file.mp3" --json
 video-downloade knowledge "/path/to/file.mp3" --json
@@ -24,8 +25,8 @@ video-downloade knowledge "/path/to/file.mp3" --json
 
 ## Command selection
 
-- 用户给的是 URL，且目标是知识库产物：用 `capture --knowledge`
-- 用户只想下载文件：用 `download`
+- 用户给的是 URL，且目标是知识库产物：优先用 `capture --knowledge`
+- 用户只想下载文件本身：用 `download`
 - 用户已经有本地音频：用 `audio`；若还要知识库稿，用 `audio --knowledge`
 - 用户已经拿到某个 sidecar，想定位整组文件或 metadata：用 `artifacts`
 - 用户只想补生成知识库稿：用 `knowledge`

@@ -50,5 +50,5 @@ video-downloade doctor --json
 
 如果代理支持读取仓库内 skill，优先加载：
 
-- [skills/video-downloade-cli/SKILL.md](skills/video-downloade-cli/SKILL.md)
-- [.codex/skills/video-downloade-cli/SKILL.md](.codex/skills/video-downloade-cli/SKILL.md)
+- [skills/muku-video-kb/SKILL.md](skills/muku-video-kb/SKILL.md)
+- [.codex/skills/muku-video-kb/SKILL.md](.codex/skills/muku-video-kb/SKILL.md)

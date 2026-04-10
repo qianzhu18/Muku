@@ -1,4 +1,0 @@
-interface:
-  display_name: "Video Downloade CLI"
-  short_description: "用命令行完成视频下载、逐字稿生成和知识库整理"
-  default_prompt: "Use $video-downloade-cli to process URLs or local audio through the CLI, return JSON-friendly results, and generate transcript or knowledge-base assets without driving the web UI."

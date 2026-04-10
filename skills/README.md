@@ -1,23 +1,25 @@
-# Skills
+# Muku Skills
 
-这个目录用于存放面向开源社区公开的 agent / AI skill 说明，目标是让不同的 AI 工具都能直接复用本仓库的 CLI 契约，而不是重复摸索“该调哪个命令、哪些参数最稳”。
+这个目录存放幕库对外公开的 agent / AI skill。目标不是让 agent 去点网页，而是直接复用稳定的 CLI 契约，把 Bilibili、YouTube、Douyin 等平台上的知识视频沉淀为 Markdown 知识库。
 
 ## 当前提供
 
-- [video-downloade-cli](video-downloade-cli/SKILL.md)
+- [muku-video-kb](muku-video-kb/SKILL.md)
 
-这个 skill 现在包含：
+这个 skill 适合：
 
-- `SKILL.md`：工作流与命令约定
-- `agents/openai.yaml`：面向 Codex/OpenAI 风格 skill 列表的界面元数据
+- 单条 URL 直接生成逐字稿、解析稿和知识库稿
+- 本地音频补做转写和知识库整理
+- 从 `urls.txt` 批量把一组视频收入本地知识库
+- 让 AI agent 复用稳定 JSON 输出，不必驱动 Web UI
 
 推荐使用顺序：
 
 1. 先跑 `video-downloade doctor --json`
 2. 再按平台补 `--youtube-cookies-*` / `--bilibili-cookies-*` / `--douyin-cookies-*`
-3. 最后让 agent 调 `capture`、`download`、`audio` 等稳定 JSON 输出命令
+3. 最后让 agent 调 `capture --knowledge`、`audio --knowledge`、`artifacts` 等命令
 
-推荐的批量知识库命令：
+推荐的批量入库命令：
 
 ```bash
 video-downloade capture \
@@ -29,20 +31,23 @@ video-downloade capture \
   --output paths
 ```
 
-如果你要从创作者主页、系列页、合集页先采链接，再批量生成 Markdown 知识库，推荐和 [`web-access`](https://github.com/eze-is/web-access) 一起用：前者负责浏览器采集 URL，后者负责批量转知识库。
+如果你要先从创作者主页、系列页、合集页采链接，再批量生成 Markdown 知识库，推荐和 [`web-access`](https://github.com/eze-is/web-access) 组合使用：前者负责浏览器采集 URL，后者负责把 URL 批量入库。
+
 ## 快速安装到 Codex
 
-推荐直接运行仓库脚本：
+推荐直接运行：
 
 ```bash
-./scripts/install-video-downloade-skill
+./scripts/install-muku-skill
 ```
+
+如果你还在沿用旧脚本名，`./scripts/install-video-downloade-skill` 也可以继续使用。
 
 如果你想手动安装：
 
 ```bash
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
-cp -R ./skills/video-downloade-cli "${CODEX_HOME:-$HOME/.codex}/skills/video-downloade-cli"
+cp -R ./skills/muku-video-kb "${CODEX_HOME:-$HOME/.codex}/skills/muku-video-kb"
 ```
 
 ## 目录约定

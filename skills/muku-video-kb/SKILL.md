@@ -1,14 +1,23 @@
 ---
-name: video-downloade-cli
+name: muku-video-kb
 description: >
-  Use this skill when an AI agent needs to process video or audio URLs, transcribe local audio,
-  generate transcript/article/knowledge assets, inspect sidecars, or operate this repository
-  through its CLI instead of the Web UI.
+  Use this skill when an AI agent needs to turn knowledge-heavy video URLs or local audio
+  from Bilibili, YouTube, Douyin, and similar sources into Markdown transcript and
+  knowledge-base assets through the Muku CLI.
 ---
 
-# Video Downloade CLI Skill
+# Muku Video KB
+
+幕库的目标是把知识视频收入本地 Markdown 知识库，而不是做一个通用下载器。
 
 优先使用这个仓库的 CLI，不要默认去驱动网页。
+
+## Best use cases
+
+- 用户给的是知识型视频 URL，希望直接得到逐字稿、解析稿和知识库稿
+- 用户给的是一组视频列表，希望批量沉淀为 Markdown 知识库
+- 用户已经有本地音频，希望补做转写和知识库整理
+- 用户想让 agent 返回 JSON 或路径，继续衔接后续 AI 工作流
 
 ## Fast path
 
@@ -16,7 +25,6 @@ description: >
 video-downloade doctor --json
 video-downloade capture "https://www.youtube.com/watch?v=..." --knowledge --json
 video-downloade capture "https://www.bilibili.com/video/BVxxxx" --knowledge --json
-video-downloade download "https://www.douyin.com/video/1234567890" --json
 video-downloade audio "/path/to/file.mp3" --knowledge --json
 video-downloade artifacts "/path/to/file.mp3" --json
 video-downloade knowledge "/path/to/file.mp3" --json
@@ -24,9 +32,9 @@ video-downloade knowledge "/path/to/file.mp3" --json
 
 ## Routing rules
 
-- 目标是从 URL 直接得到逐字稿和知识库稿：用 `capture --knowledge`
-- 只想下载文件：用 `download`
-- 已经有本地音频：用 `audio`；如果还要知识库稿，用 `audio --knowledge`
+- 目标是从 URL 直接得到 Markdown 资产：优先用 `capture --knowledge`
+- 只在用户明确要求“下载文件本身”时才用 `download`
+- 已经有本地音频：用 `audio`；若还要知识库稿，用 `audio --knowledge`
 - 已经拿到 sidecar 或音频路径：用 `artifacts`
 - 已经有逐字稿资产，只想补生成知识库稿：用 `knowledge`
 - 不确定依赖、模型、Cookies、提示词是否就绪：先跑 `doctor`
@@ -39,7 +47,7 @@ video-downloade knowledge "/path/to/file.mp3" --json
 - 长批量任务默认搭配 `--resume`
 - 批量输入优先 `--input-file` 或 `--stdin`
 
-## Batch examples
+## Batch ingestion
 
 ```bash
 video-downloade capture \
@@ -47,9 +55,8 @@ video-downloade capture \
   --knowledge \
   --jobs 0 \
   --resume \
-  --result-file ./capture.json \
-  --json
-cat ./urls.txt | video-downloade capture --stdin --output paths
+  --result-file ./runs/creator-series/capture.json \
+  --output paths
 ```
 
 批量场景约定：
@@ -77,22 +84,13 @@ video-downloade capture URL \
 3. 优先用 `*_COOKIES_FROM_BROWSER`
 4. 浏览器方案不稳定时，再回退到 `*_COOKIES_PATH`
 
-## Pairing with web-access
+## Pairing with browsing agents
 
-如果任务是“先从博主主页或系列页采链接，再批量整理知识库”，推荐与 [`web-access`](https://github.com/eze-is/web-access) 搭配：
+如果任务是“先从博主主页、频道页、系列页、合集页采链接，再批量收入知识库”，推荐与 [`web-access`](https://github.com/eze-is/web-access) 搭配：
 
-1. 让 `web-access` 把目标视频 URL 提取成 `./urls.txt`
-2. 再调用：
+1. 让浏览器型 agent 把目标视频 URL 提取成 `./urls.txt`
+2. 再调用上面的批量 `capture --knowledge` 命令
 
-```bash
-video-downloade capture \
-  --input-file ./urls.txt \
-  --knowledge \
-  --jobs 0 \
-  --resume \
-  --result-file ./runs/creator-series/capture.json \
-  --output paths
-```
 ## Useful runtime overrides
 
 ```bash
