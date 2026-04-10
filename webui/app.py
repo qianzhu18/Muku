@@ -135,6 +135,7 @@ TRANSCRIPTION_LANGUAGE = os.environ.get("TRANSCRIPTION_LANGUAGE", "auto")
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")
 TRANSCRIPTION_AUDIO_BITRATE = os.environ.get("TRANSCRIPTION_AUDIO_BITRATE", "48k")
 KEEP_TRANSCRIPTION_INPUT = env_bool("KEEP_TRANSCRIPTION_INPUT", False)
+MAX_OUTPUT_TITLE_CHARS = max(16, int(os.environ.get("MAX_OUTPUT_TITLE_CHARS", "48")))
 VIDEO_PRESET_NAME = "Highest Video (MP4)"
 AUDIO_PRESET_NAME = "Best Audio (MP3)"
 TRANSCRIPT_PRESET_NAME = "Markdown 逐字稿（字幕优先）"
@@ -535,7 +536,9 @@ def progress_hook(job: Job):
 
 def output_template(base_dir: str | Path | None = None) -> str:
     target_dir = Path(base_dir) if base_dir is not None else Path(DOWNLOAD_DIR)
-    return str(target_dir / "%(title)s [%(id)s]" / "%(title)s [%(id)s].%(ext)s")
+    title_token = f"%(title).{MAX_OUTPUT_TITLE_CHARS}s"
+    stem = f"{title_token} [%(id)s]"
+    return str(target_dir / stem / f"{stem}.%(ext)s")
 
 
 def parse_cookies_from_browser_spec(spec: str) -> tuple[str, str | None, str | None, str | None]:
@@ -786,6 +789,18 @@ def sanitize_output_component(value: str) -> str:
     return sanitized or "untitled"
 
 
+def truncate_output_title(title: str) -> str:
+    sanitized = sanitize_output_component(title)
+    if len(sanitized) <= MAX_OUTPUT_TITLE_CHARS:
+        return sanitized
+    return sanitized[:MAX_OUTPUT_TITLE_CHARS].rstrip() or sanitized[:MAX_OUTPUT_TITLE_CHARS]
+
+
+def build_output_stem(title: str, media_id: str) -> str:
+    safe_title = truncate_output_title(title)
+    return sanitize_output_component(f"{safe_title} [{media_id}]")
+
+
 def normalize_shared_url(candidate: str) -> str:
     trailing_chars = ".,!?;:)]}>\"'。 ，！？；：、）】」』》".replace(" ", "")
     return candidate.strip().rstrip(trailing_chars)
@@ -817,7 +832,7 @@ def collect_url_inputs(text: str) -> list[str]:
 def build_artifact_base_path(info: dict, *, base_dir: str | Path | None = None) -> Path:
     title = info.get("title") or info.get("id") or "Untitled"
     media_id = info.get("id") or uuid.uuid4().hex[:8]
-    stem = sanitize_output_component(f"{title} [{media_id}]")
+    stem = build_output_stem(str(title), str(media_id))
     target_dir = Path(base_dir) if base_dir is not None else Path(DOWNLOAD_DIR)
     return target_dir / stem / stem
 

@@ -180,6 +180,40 @@ class SubtitleParsingTests(unittest.TestCase):
         self.assertTrue(prepared_path.name.endswith(".transcribe.mp3"))
         prepared_path.unlink(missing_ok=True)
 
+    def test_build_artifact_base_path_truncates_long_titles(self) -> None:
+        long_title = (
+            "B站强推！这才是2026年最全最细的AI产品经理教程，从零到精通，字节大佬整理的内部版，"
+            "通俗易懂，学完即就业！！！ 大模型｜LLM p07【基础篇】07. 如何从0开始做一款软硬协同型AI产品？"
+        )
+
+        artifact_base = web_app.build_artifact_base_path(
+            {"title": long_title, "id": "BV1KzDYBYED6_p7"},
+            base_dir="/tmp/muku-tests",
+        )
+
+        component = artifact_base.name
+        self.assertLess(len(component.encode("utf-8")), 255)
+        self.assertIn("[BV1KzDYBYED6_p7]", component)
+        self.assertEqual(artifact_base.parent.name, component)
+
+    def test_output_template_truncates_long_title_components(self) -> None:
+        info = {
+            "title": (
+                "B站强推！这才是2026年最全最细的AI产品经理教程，从零到精通，字节大佬整理的内部版，"
+                "通俗易懂，学完即就业！！！ 大模型｜LLM p07【基础篇】07. 如何从0开始做一款软硬协同型AI产品？"
+            ),
+            "id": "BV1KzDYBYED6_p7",
+            "ext": "mp4",
+        }
+        ydl = web_app.yt_dlp.YoutubeDL({"quiet": True})
+
+        rendered = ydl.evaluate_outtmpl(web_app.output_template("/tmp/muku-tests"), info)
+
+        relative = Path(rendered).relative_to("/tmp/muku-tests")
+        for component in relative.parts:
+            self.assertLess(len(component.encode("utf-8")), 255)
+        self.assertIn("[BV1KzDYBYED6_p7]", relative.parts[0])
+
     def test_resolve_download_dir_respects_root_lock(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root_dir = Path(temp_dir) / "downloads"
