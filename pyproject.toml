@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "video-downloade"
 version = "0.1.0"
-description = "Download videos or audio and turn them into Markdown transcript assets."
+description = "Muku turns knowledge-heavy video links and local audio into Markdown transcript and knowledge-base assets."
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

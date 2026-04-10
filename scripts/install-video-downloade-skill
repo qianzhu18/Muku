@@ -2,18 +2,5 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
-SOURCE_DIR="${REPO_ROOT}/skills/video-downloade-cli"
-DEST_ROOT="${1:-${CODEX_HOME:-$HOME/.codex}}"
-DEST_DIR="${DEST_ROOT}/skills/video-downloade-cli"
 
-if [[ ! -d "${SOURCE_DIR}" ]]; then
-  echo "Skill source not found: ${SOURCE_DIR}" >&2
-  exit 1
-fi
-
-mkdir -p "${DEST_ROOT}/skills"
-rm -rf "${DEST_DIR}"
-cp -R "${SOURCE_DIR}" "${DEST_DIR}"
-
-echo "Installed video-downloade-cli skill to ${DEST_DIR}"
+"${SCRIPT_DIR}/install-muku-skill" "$@"

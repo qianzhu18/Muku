@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd -P)"
+SOURCE_DIR="${REPO_ROOT}/skills/muku-video-kb"
+DEST_ROOT="${1:-${CODEX_HOME:-$HOME/.codex}}"
+DEST_DIR="${DEST_ROOT}/skills/muku-video-kb"
+LEGACY_DEST_DIR="${DEST_ROOT}/skills/video-downloade-cli"
+
+if [[ ! -d "${SOURCE_DIR}" ]]; then
+  echo "Skill source not found: ${SOURCE_DIR}" >&2
+  exit 1
+fi
+
+mkdir -p "${DEST_ROOT}/skills"
+rm -rf "${DEST_DIR}"
+cp -R "${SOURCE_DIR}" "${DEST_DIR}"
+rm -rf "${LEGACY_DEST_DIR}"
+
+echo "Installed muku-video-kb skill to ${DEST_DIR}"

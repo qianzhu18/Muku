@@ -190,19 +190,19 @@ docker compose exec ytdl-webui video-downloade capture URL --knowledge --json
 
 公开 skill 已经整理在：
 
-- [../skills/video-downloade-cli/SKILL.md](../skills/video-downloade-cli/SKILL.md)
+- [../skills/muku-video-kb/SKILL.md](../skills/muku-video-kb/SKILL.md)
 
 安装到 Codex：
 
 ```bash
-./scripts/install-video-downloade-skill
+./scripts/install-muku-skill
 ```
 
 如果你想手动复制：
 
 ```bash
 mkdir -p "${CODEX_HOME:-$HOME/.codex}/skills"
-cp -R ./skills/video-downloade-cli "${CODEX_HOME:-$HOME/.codex}/skills/video-downloade-cli"
+cp -R ./skills/muku-video-kb "${CODEX_HOME:-$HOME/.codex}/skills/muku-video-kb"
 ```
 
 ## 搭配 web-access

@@ -7,7 +7,7 @@
 
 推荐组合：
 
-- 本仓库的 `video-downloade-cli` skill：负责下载、逐字稿、知识库整理
+- 本仓库的 `muku-video-kb` skill：负责下载、逐字稿、知识库整理
 - [`web-access`](https://github.com/eze-is/web-access)：负责打开动态页面、浏览器登录态页面和创作者主页，把 URL 提成 `urls.txt`
 
 ## 1. 安装
@@ -15,7 +15,7 @@
 安装本仓库 skill：
 
 ```bash
-./scripts/install-video-downloade-skill
+./scripts/install-muku-skill
 ```
 
 安装 [`web-access`](https://github.com/eze-is/web-access)：
