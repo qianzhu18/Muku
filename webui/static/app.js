@@ -22,9 +22,11 @@ const knowledgeOptionHint = document.getElementById("knowledge-option-hint");
 const downloadDirInput = document.getElementById("download-dir");
 const downloadDirHint = document.getElementById("download-dir-hint");
 const starterGuide = document.getElementById("starter-guide");
+const starterGuideSummary = starterGuide.querySelector("summary");
 const starterTitle = document.getElementById("starter-title");
 const starterSubtitle = document.getElementById("starter-subtitle");
 const starterProgress = document.getElementById("starter-progress");
+const starterToggleLabel = document.getElementById("starter-toggle-label");
 const starterChecklist = document.getElementById("starter-checklist");
 const starterPlatforms = document.getElementById("starter-platforms");
 const starterCallout = document.getElementById("starter-callout");
@@ -101,6 +103,7 @@ let selectedArtifactKind = null;
 const artifactPreviewCache = new Map();
 const artifactPreviewInFlight = new Map();
 let isSubmitting = false;
+let starterGuideTouched = false;
 
 (function init() {
   hydrateWebTokenFromLocation();
@@ -148,6 +151,10 @@ function bindEvents() {
   clearUrlBtn.addEventListener("click", clearUrlField);
   cookiesCheckbox.addEventListener("change", updateSubmitLabel);
   downloadDirInput.addEventListener("input", updateDownloadDirHint);
+  starterGuideSummary.addEventListener("click", () => {
+    starterGuideTouched = true;
+  });
+  starterGuide.addEventListener("toggle", updateStarterGuideToggleLabel);
 
   form.addEventListener("submit", submitDownloadForm);
   settingsForm.addEventListener("submit", submitSettingsForm);
@@ -927,6 +934,9 @@ function renderStarterGuide() {
   const state = buildStarterGuideState();
   starterGuide.classList.toggle("is-ready", state.coreReady);
   starterGuide.classList.toggle("is-setup", !state.coreReady);
+  if (!starterGuideTouched) {
+    starterGuide.open = !state.coreReady && latestTasks.length === 0;
+  }
   starterTitle.textContent = state.title;
   starterSubtitle.textContent = state.subtitle;
   starterProgress.textContent = `${state.completed} / ${state.total}`;
@@ -937,6 +947,7 @@ function renderStarterGuide() {
     <p>${escapeHtml(state.callout.body)}</p>
   `;
   starterOpenSettings.textContent = state.primaryActionLabel;
+  updateStarterGuideToggleLabel();
 }
 
 function buildStarterGuideState() {
@@ -1091,6 +1102,10 @@ function renderPlatformPill(platform) {
       <span>${escapeHtml(platform.name)}</span>
       <strong>${escapeHtml(platform.summary)}</strong>
     </article>`;
+}
+
+function updateStarterGuideToggleLabel() {
+  starterToggleLabel.textContent = starterGuide.open ? "收起详情" : "展开详情";
 }
 
 function updateModeHint() {
