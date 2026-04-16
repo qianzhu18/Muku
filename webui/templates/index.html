@@ -213,6 +213,126 @@
 
       <section class="workspace">
         <div class="primary-column">
+          <section class="card task-form-card hero-card">
+            <div class="card-header">
+              <p class="eyebrow">Paste First</p>
+              <h2>先粘贴一条链接</h2>
+              <p>默认先走逐字稿模式；其他格式、Cookies 和保存目录收进高级选项。你不需要先研究设置面板。</p>
+            </div>
+
+            <form id="download-form">
+              <div class="form-scroll">
+                <div class="task-entry-shell">
+                  <div class="field field-url">
+                    <label for="url">视频链接或分享文案</label>
+                    <textarea
+                      id="url"
+                      name="url"
+                      rows="4"
+                      placeholder="直接粘贴视频链接，或整段分享文案..."
+                      autofocus
+                      required
+                    ></textarea>
+                    <p class="field-help">
+                      支持直接粘贴一整段分享文案，系统会自动提取其中的链接。
+                    </p>
+                  </div>
+
+                  <div class="task-entry-side">
+                    <div class="task-entry-actions">
+                      <button id="paste-clipboard-btn" type="button" class="nav-button">
+                        从剪贴板粘贴
+                      </button>
+                      <button id="clear-url-btn" type="button" class="nav-button ghost-button">
+                        清空
+                      </button>
+                    </div>
+                    <div id="task-entry-summary" class="task-entry-summary">
+                      默认模式会先尝试平台字幕，失败后再自动回退到音频转写。
+                    </div>
+                  </div>
+                </div>
+
+                <div id="task-feedback" class="task-feedback is-hidden" role="status" aria-live="polite"></div>
+
+                <details id="task-advanced" class="task-advanced">
+                  <summary>高级选项</summary>
+                  <div class="task-advanced-body">
+                    <div class="compact-overview">
+                      <article class="overview-chip">
+                        <span>默认下载目录</span>
+                        <strong id="summary-download-dir">-</strong>
+                      </article>
+                      <article class="overview-chip">
+                        <span>转写模型</span>
+                        <strong id="summary-model">-</strong>
+                      </article>
+                      <article class="overview-chip">
+                        <span>平台登录态</span>
+                        <strong id="summary-auth">-</strong>
+                      </article>
+                    </div>
+
+                    <div class="form-layout">
+                      <div class="field field-preset">
+                        <label for="preset">下载格式</label>
+                        <select id="preset" name="preset"></select>
+                      </div>
+
+                      <div class="field checkbox-field field-login">
+                        <label for="use-cookies">登录态</label>
+                        <label class="switch-line" for="use-cookies">
+                          <input type="checkbox" id="use-cookies" />
+                          启用 Cookies（优先使用平台专用 `cookies.txt`）
+                        </label>
+                      </div>
+
+                      <div class="field checkbox-field field-knowledge">
+                        <label for="generate-knowledge">知识库稿</label>
+                        <label class="switch-line" for="generate-knowledge">
+                          <input type="checkbox" id="generate-knowledge" />
+                          逐字稿完成后继续生成 `知识库.md`
+                        </label>
+                        <p class="field-help" id="knowledge-option-hint">
+                          仅在 Markdown 逐字稿模式下可用。
+                        </p>
+                      </div>
+
+                      <div class="field field-download-dir">
+                        <label for="download-dir">本次保存到（可选）</label>
+                        <input
+                          id="download-dir"
+                          name="download-dir"
+                          type="text"
+                          placeholder="留空则使用默认下载目录"
+                        />
+                        <p class="field-help" id="download-dir-hint">
+                          留空时会写入默认下载目录。
+                        </p>
+                      </div>
+                    </div>
+
+                    <div class="field-note-stack">
+                      <p id="mode-hint" class="field-help">
+                        `Markdown 逐字稿` 会先试平台字幕，失败后自动回退到 MP3 转写。
+                      </p>
+                      <p id="cookies-hint" class="field-help">
+                        未检测到 Cookies 时，YouTube、Douyin 和部分 B 站视频可能受限。
+                      </p>
+                    </div>
+                  </div>
+                </details>
+              </div>
+
+              <div class="form-actions">
+                <p id="task-submit-help" class="field-help">
+                  粘贴一条链接后直接开始；队列和产物预览会在右侧自动更新。
+                </p>
+                <button type="submit" id="start-btn" class="btn-primary">开始下载视频</button>
+              </div>
+            </form>
+          </section>
+
           <section id="starter-guide" class="card starter-card">
             <div class="starter-head">
               <div class="card-header compact">
@@ -241,95 +361,6 @@
                 </div>
               </div>
             </div>
-          </section>
-
-          <section class="card task-form-card">
-            <div class="card-header">
-              <h2>新建任务</h2>
-              <p>左侧发任务，右侧看队列和详情，设置收进右上角抽屉。</p>
-            </div>
-
-            <div class="compact-overview">
-              <article class="overview-chip">
-                <span>默认下载目录</span>
-                <strong id="summary-download-dir">-</strong>
-              </article>
-              <article class="overview-chip">
-                <span>转写模型</span>
-                <strong id="summary-model">-</strong>
-              </article>
-              <article class="overview-chip">
-                <span>平台登录态</span>
-                <strong id="summary-auth">-</strong>
-              </article>
-            </div>
-
-            <form id="download-form">
-              <div class="form-scroll">
-                <div class="form-layout">
-                  <div class="field field-url">
-                    <label for="url">视频链接或分享文案</label>
-                    <textarea
-                      id="url"
-                      name="url"
-                      rows="3"
-                      placeholder="在此粘贴链接或分享文案..."
-                      required
-                    ></textarea>
-                  </div>
-
-                  <div class="field field-preset">
-                    <label for="preset">下载格式</label>
-                    <select id="preset" name="preset"></select>
-                  </div>
-
-                  <div class="field checkbox-field field-login">
-                    <label for="use-cookies">登录态</label>
-                    <label class="switch-line" for="use-cookies">
-                      <input type="checkbox" id="use-cookies" />
-                      启用 Cookies（优先使用平台专用 `cookies.txt`）
-                    </label>
-                  </div>
-
-                  <div class="field checkbox-field field-knowledge">
-                    <label for="generate-knowledge">知识库稿</label>
-                    <label class="switch-line" for="generate-knowledge">
-                      <input type="checkbox" id="generate-knowledge" />
-                      逐字稿完成后继续生成 `知识库.md`
-                    </label>
-                    <p class="field-help" id="knowledge-option-hint">
-                      仅在 Markdown 逐字稿模式下可用。
-                    </p>
-                  </div>
-
-                  <div class="field field-download-dir">
-                    <label for="download-dir">本次保存到（可选）</label>
-                    <input
-                      id="download-dir"
-                      name="download-dir"
-                      type="text"
-                      placeholder="留空则使用默认下载目录"
-                    />
-                    <p class="field-help" id="download-dir-hint">
-                      留空时会写入默认下载目录。
-                    </p>
-                  </div>
-                </div>
-
-                <div class="field-note-stack">
-                  <p id="mode-hint" class="field-help">
-                    `Markdown 逐字稿` 会先试平台字幕，失败后自动回退到 MP3 转写。
-                  </p>
-                  <p id="cookies-hint" class="field-help">
-                    未检测到 Cookies 时，YouTube、Douyin 和部分 B 站视频可能受限。
-                  </p>
-                </div>
-              </div>
-
-              <div class="form-actions">
-                <button type="submit" id="start-btn" class="btn-primary">开始下载视频</button>
-              </div>
-            </form>
           </section>
         </div>
 
@@ -366,7 +397,7 @@
             <div id="queue-panel" class="monitor-panel is-active">
               <ul id="task-list" class="task-list">
                 <li class="empty-state">
-                  暂无下载任务，去左侧添加一个吧。
+                  暂无下载任务，去上面的入口粘贴一条吧。
                 </li>
               </ul>
             </div>

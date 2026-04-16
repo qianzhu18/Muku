@@ -2451,6 +2451,7 @@ def start():
         return jsonify({"error": str(exc)}), 400
 
     added = 0
+    job_ids: list[str] = []
     with jobs_lock:
         for url in urls:
             job_id = uuid.uuid4().hex
@@ -2466,7 +2467,8 @@ def start():
             jobs[job_id] = job
             executor.submit(worker, job_id)
             added += 1
-    return jsonify({"count": added})
+            job_ids.append(job_id)
+    return jsonify({"count": added, "job_ids": job_ids})
 
 
 @app.route("/api/tasks")

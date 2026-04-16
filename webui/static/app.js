@@ -2,10 +2,17 @@ const config = window.APP_CONFIG || {};
 config.settings = config.settings || {};
 config.platformAuth = config.platformAuth || {};
 
+const urlInput = document.getElementById("url");
 const presetSelect = document.getElementById("preset");
 const taskList = document.getElementById("task-list");
 const form = document.getElementById("download-form");
 const startBtn = document.getElementById("start-btn");
+const pasteClipboardBtn = document.getElementById("paste-clipboard-btn");
+const clearUrlBtn = document.getElementById("clear-url-btn");
+const taskFeedback = document.getElementById("task-feedback");
+const taskAdvanced = document.getElementById("task-advanced");
+const taskEntrySummary = document.getElementById("task-entry-summary");
+const taskSubmitHelp = document.getElementById("task-submit-help");
 const queueCount = document.getElementById("queue-count");
 const modeHint = document.getElementById("mode-hint");
 const cookiesHint = document.getElementById("cookies-hint");
@@ -93,6 +100,7 @@ let autoPromptedForWebToken = false;
 let selectedArtifactKind = null;
 const artifactPreviewCache = new Map();
 const artifactPreviewInFlight = new Map();
+let isSubmitting = false;
 
 (function init() {
   hydrateWebTokenFromLocation();
@@ -131,6 +139,14 @@ function bindEvents() {
     updateSubmitLabel();
   });
 
+  urlInput.addEventListener("input", () => {
+    clearTaskFeedback();
+    updateSubmitLabel();
+  });
+
+  pasteClipboardBtn.addEventListener("click", pasteUrlFromClipboard);
+  clearUrlBtn.addEventListener("click", clearUrlField);
+  cookiesCheckbox.addEventListener("change", updateSubmitLabel);
   downloadDirInput.addEventListener("input", updateDownloadDirHint);
 
   form.addEventListener("submit", submitDownloadForm);
@@ -182,15 +198,16 @@ function bindEvents() {
 
 async function submitDownloadForm(event) {
   event.preventDefault();
-  const url = document.getElementById("url").value;
+  const url = urlInput.value;
   const preset = presetSelect.value;
   const cookies = cookiesCheckbox.checked;
   const generateTranscript = preset === config.transcriptPreset;
   const generateKnowledge = generateKnowledgeCheckbox.checked && !generateKnowledgeCheckbox.disabled;
   const downloadDir = downloadDirInput.value.trim();
 
-  startBtn.disabled = true;
-  startBtn.textContent = "提交中...";
+  isSubmitting = true;
+  showTaskFeedback("info", "正在把任务加入队列，马上会切到右侧观察面板。");
+  updateSubmitLabel();
 
   try {
     const res = await apiFetch("/api/start", {
@@ -205,20 +222,47 @@ async function submitDownloadForm(event) {
         download_dir: downloadDir,
       }),
     });
+    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
       throw new Error(data.error || `HTTP ${res.status}`);
     }
-    document.getElementById("url").value = "";
+    const jobIds = Array.isArray(data.job_ids) ? data.job_ids : [];
+    if (jobIds.length) {
+      selectedTaskId = jobIds[0];
+      selectedArtifactKind = null;
+    }
+    urlInput.value = "";
     downloadDirInput.value = "";
     generateKnowledgeCheckbox.checked = false;
+    taskAdvanced.open = false;
     updateDownloadDirHint();
     updateKnowledgeOption();
-    poll();
+    await poll();
+    setMonitorPanel(jobIds.length ? "detail" : "queue");
+    renderTaskDetail();
+    showTaskFeedback(
+      "success",
+      data.count > 1
+        ? `已接收 ${data.count} 条任务，右侧已经切到观察面板。`
+        : "任务已加入队列，右侧已经切到观察面板。",
+    );
+    if (window.innerWidth < 1120) {
+      document.querySelector(".monitor-column")?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
   } catch (err) {
-    alert("提交失败: " + (err?.message || err));
+    const failure = explainSubmitFailure(err?.message || String(err));
+    if (failure.openAdvanced) {
+      taskAdvanced.open = true;
+    }
+    if (failure.openSettings) {
+      openSettingsDrawer();
+    }
+    if (failure.focusUrl) {
+      focusUrlInput();
+    }
+    showTaskFeedback("error", failure.message);
   } finally {
-    startBtn.disabled = false;
+    isSubmitting = false;
     updateSubmitLabel();
   }
 }
@@ -392,7 +436,7 @@ function renderTaskList() {
   if (!latestTasks.length) {
     taskList.innerHTML = `
       <li class="empty-state">
-        暂无下载任务，去左侧添加一个吧。
+        暂无下载任务，去上面的入口粘贴一条吧。
       </li>`;
     return;
   }
@@ -730,6 +774,7 @@ function applySettings(settings) {
   updateCookiesHint();
   updateKnowledgeOption();
   updateDownloadDirHint();
+  updateSubmitLabel();
   renderStarterGuide();
 }
 
@@ -857,15 +902,25 @@ function updateOverviewSummary() {
 
 function updateSubmitLabel() {
   const preset = presetSelect.value;
+  let nextAction = "开始下载视频";
+  let readyHint = "会直接下载最高画质视频。";
   if (preset === config.transcriptPreset) {
-    startBtn.textContent = "开始提取逐字稿";
-    return;
+    nextAction = "开始提取逐字稿";
+    readyHint = "会先尝试平台字幕，失败后再自动回退到音频转写。";
+  } else if (preset === config.audioPreset) {
+    nextAction = "开始下载 MP3";
+    readyHint = "只下载 MP3 音频，不会自动生成 Markdown。";
   }
-  if (preset === config.audioPreset) {
-    startBtn.textContent = "开始下载 MP3";
-    return;
+  startBtn.textContent = isSubmitting ? "提交中..." : nextAction;
+  startBtn.disabled = isSubmitting || !urlInput.value.trim();
+  if (isSubmitting) {
+    taskSubmitHelp.textContent = "正在把任务加入队列，右侧马上会显示新状态。";
+  } else if (urlInput.value.trim()) {
+    taskSubmitHelp.textContent = `${readyHint} 提交后右侧会自动切到观察面板。`;
+  } else {
+    taskSubmitHelp.textContent = "先把链接贴进上面的输入框；支持直接粘贴整段分享文案。";
   }
-  startBtn.textContent = "开始下载视频";
+  updateTaskEntrySummary();
 }
 
 function renderStarterGuide() {
@@ -954,7 +1009,7 @@ function buildStarterGuideState() {
 
   if (hasDownloadDir && transcriptionReady && !hasRunTask) {
     title = "核心配置已就绪";
-    subtitle = "现在可以直接在下面粘贴一条链接，先验证第一次逐字稿任务。";
+    subtitle = "现在可以直接在上面的输入框里粘贴一条链接，先验证第一次逐字稿任务。";
     callout = {
       title: verifiedPlatforms.length
         ? "可以开始第一次任务"
@@ -1079,6 +1134,30 @@ function updateModeHint() {
   modeHint.textContent = "当前下载最高画质视频，优先保留高分辨率并合并为 MP4。";
 }
 
+function updateTaskEntrySummary() {
+  const preset = presetSelect.value;
+  const verifiedPlatforms = collectAuthPlatforms({ verifiedOnly: true });
+  const configuredPlatforms = collectAuthPlatforms();
+  let modeSummary = "默认模式：逐字稿优先，先试平台字幕，再自动回退到音频转写。";
+  if (preset === config.audioPreset) {
+    modeSummary = "当前模式：只下载 MP3 音频，不会自动生成 Markdown。";
+  } else {
+    modeSummary = "当前模式：下载最高画质视频，适合先把素材保存下来。";
+  }
+
+  let authSummary = "当前没有已验证登录态，先试一条公开视频即可。";
+  if (verifiedPlatforms.length) {
+    authSummary = `已验证 ${verifiedPlatforms.join(" / ")}，遇到受限内容时更稳。`;
+  } else if (configuredPlatforms.length) {
+    authSummary = `已检测到 ${configuredPlatforms.join(" / ")} 配置，真实可用性仍要拿一条链接实测。`;
+  }
+
+  const cookiesSummary = cookiesCheckbox.checked
+    ? "这次会优先带上可用 Cookies。"
+    : "如果链接受限，再打开 Cookies 即可。";
+  taskEntrySummary.textContent = `${modeSummary} ${authSummary} ${cookiesSummary}`;
+}
+
 function updateKnowledgeOption() {
   const preset = presetSelect.value;
   const knowledgeEnabled = Boolean(config.settings.enable_knowledge_draft);
@@ -1165,6 +1244,91 @@ function updateCookiesHint() {
     return;
   }
   cookiesHint.textContent = "当前已验证 Douyin 登录态。勾选“启用 Cookies”后，会优先用 Douyin 登录态访问抖音下载接口。";
+}
+
+function showTaskFeedback(tone, message) {
+  taskFeedback.textContent = message;
+  taskFeedback.className = `task-feedback is-${tone}`;
+}
+
+function clearTaskFeedback() {
+  taskFeedback.textContent = "";
+  taskFeedback.className = "task-feedback is-hidden";
+}
+
+function focusUrlInput() {
+  urlInput.focus();
+  const cursor = urlInput.value.length;
+  urlInput.setSelectionRange(cursor, cursor);
+}
+
+function clearUrlField() {
+  urlInput.value = "";
+  clearTaskFeedback();
+  updateSubmitLabel();
+  focusUrlInput();
+}
+
+async function pasteUrlFromClipboard() {
+  if (!navigator.clipboard?.readText) {
+    showTaskFeedback("error", "当前浏览器不允许自动读取剪贴板，请直接按 Cmd+V / Ctrl+V 粘贴。");
+    focusUrlInput();
+    return;
+  }
+
+  try {
+    const clipText = (await navigator.clipboard.readText()).trim();
+    if (!clipText) {
+      showTaskFeedback("error", "剪贴板现在是空的。先复制一条链接，再回来点“从剪贴板粘贴”。");
+      focusUrlInput();
+      return;
+    }
+    urlInput.value = clipText;
+    updateSubmitLabel();
+    showTaskFeedback("success", "已经把剪贴板内容填进输入框了，确认无误后直接开始即可。");
+    focusUrlInput();
+  } catch (err) {
+    showTaskFeedback("error", "没能读取剪贴板。你可以直接按 Cmd+V / Ctrl+V 粘贴，或者检查浏览器权限。");
+    focusUrlInput();
+  }
+}
+
+function explainSubmitFailure(message) {
+  const text = String(message || "").trim() || "unknown error";
+  const lower = text.toLowerCase();
+
+  if (text.includes("没有识别到可用链接") || text.includes("请输入有效的视频链接")) {
+    return {
+      message: `${text} 你可以直接粘贴原始 URL，也可以把整段分享文案原样贴进来。`,
+      focusUrl: true,
+    };
+  }
+
+  if (text.includes("最多提交")) {
+    return {
+      message: `${text} 先减少这次提交的链接数量，跑通后再继续批量导入。`,
+      focusUrl: true,
+    };
+  }
+
+  if (text.includes("下载根目录") || text.includes("download")) {
+    return {
+      message: `${text} 你可以先把“本次保存到”清空，先用默认目录试一次。`,
+      openAdvanced: true,
+    };
+  }
+
+  if (text.includes("知识库") || text.includes("API Key") || lower.includes("invalid preset")) {
+    return {
+      message: `${text} 我已经帮你保留当前输入，先补齐设置后再重试。`,
+      openAdvanced: true,
+      openSettings: text.includes("API Key") || text.includes("知识库"),
+    };
+  }
+
+  return {
+    message: `提交没有成功：${text}。先检查链接是否能打开；如果是受限内容，再勾选 Cookies 试一次。`,
+  };
 }
 
 function getPlatformAuthState(platformKey) {

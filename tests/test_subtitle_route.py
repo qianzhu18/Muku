@@ -279,8 +279,12 @@ class SubtitleParsingTests(unittest.TestCase):
             )
 
         self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(len(payload["job_ids"]), 1)
         with web_app.jobs_lock:
             created_jobs = list(web_app.jobs.values())
+            self.assertEqual(created_jobs[0].job_id, payload["job_ids"][0])
             self.assertEqual(created_jobs[0].url, "https://youtube.com/watch?v=abcdefghijk")
             web_app.jobs.clear()
 
