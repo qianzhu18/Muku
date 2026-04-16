@@ -1,9 +1,12 @@
 import html
 import hashlib
+import hmac
+import ipaddress
 import json
 import os
 import re
 import shutil
+import socket
 import subprocess
 import tempfile
 import threading
@@ -12,7 +15,9 @@ import uuid
 import xml.etree.ElementTree as ET
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from functools import wraps
 from pathlib import Path
+from urllib.parse import urlparse
 
 from flask import Flask, jsonify, render_template, request
 
@@ -36,6 +41,7 @@ try:
         ENABLE_KNOWLEDGE_DRAFT,
         cleanup_transcript,
         generate_article_draft as generate_ai_article_draft,
+        generate_knowledge_draft,
     )
     from .openrouter_backends import (
         OPENROUTER_APP_NAME,
@@ -76,6 +82,7 @@ except ImportError:
         ENABLE_KNOWLEDGE_DRAFT,
         cleanup_transcript,
         generate_article_draft as generate_ai_article_draft,
+        generate_knowledge_draft,
     )
     from openrouter_backends import (
         OPENROUTER_APP_NAME,
@@ -97,6 +104,10 @@ except ImportError:
         write_sidecar_files,
     )
 load_env_file()
+
+APP_DIR = Path(__file__).resolve().parent
+STATIC_DIR = APP_DIR / "static"
+TEMPLATE_DIR = APP_DIR / "templates"
 
 try:
     import yt_dlp
@@ -128,12 +139,17 @@ YTDLP_REMOTE_COMPONENTS = tuple(
     if component.strip()
 )
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "2"))
-HOST = os.environ.get("HOST", "0.0.0.0")
+HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8080"))
+WEB_TOKEN = os.environ.get("MUKU_WEB_TOKEN", "").strip()
+WEB_TOKEN_HEADER = "X-Muku-Web-Token"
+MAX_START_URLS = max(1, int(os.environ.get("MAX_START_URLS", "50")))
 ENABLE_TRANSCRIPTION = env_bool("ENABLE_TRANSCRIPTION", True)
 TRANSCRIPTION_LANGUAGE = os.environ.get("TRANSCRIPTION_LANGUAGE", "auto")
 FFMPEG_BIN = os.environ.get("FFMPEG_BIN", "ffmpeg")
 TRANSCRIPTION_AUDIO_BITRATE = os.environ.get("TRANSCRIPTION_AUDIO_BITRATE", "48k")
+ENABLE_TRANSCRIPTION_CHUNKING = env_bool("ENABLE_TRANSCRIPTION_CHUNKING", True)
+TRANSCRIPTION_CHUNK_SECONDS = max(60, int(os.environ.get("TRANSCRIPTION_CHUNK_SECONDS", "600")))
 KEEP_TRANSCRIPTION_INPUT = env_bool("KEEP_TRANSCRIPTION_INPUT", False)
 MAX_OUTPUT_TITLE_CHARS = max(16, int(os.environ.get("MAX_OUTPUT_TITLE_CHARS", "48")))
 VIDEO_PRESET_NAME = "Highest Video (MP4)"
@@ -143,7 +159,7 @@ SUBTITLE_LANGUAGES = tuple(
     lang.strip()
     for lang in os.environ.get(
         "SUBTITLE_LANGUAGES",
-        "zh-Hans,zh-CN,zh-TW,zh-HK,zh,cmn-Hans-CN,en,en-US",
+        "ai-zh,zh-Hans,zh-CN,zh-TW,zh-HK,zh,cmn-Hans-CN,ai-en,en,en-US",
     ).split(",")
     if lang.strip()
 )
@@ -181,6 +197,45 @@ FORMAT_PRESETS = {
     },
 }
 
+PLATFORM_AUTH_ORDER = (
+    ("youtube", "YouTube"),
+    ("bilibili", "Bilibili"),
+    ("douyin", "Douyin"),
+)
+ARTIFACT_PREVIEW_CHAR_LIMIT = 24000
+ARTIFACT_PREVIEW_FIELDS: dict[str, dict[str, str]] = {
+    "article": {
+        "attr": "article_path",
+        "label": "解析稿",
+        "suffix": " - 解析稿.md",
+        "format": "markdown",
+    },
+    "transcript": {
+        "attr": "transcript_path",
+        "label": "逐字稿",
+        "suffix": " - 逐字稿.md",
+        "format": "markdown",
+    },
+    "knowledge": {
+        "attr": "knowledge_path",
+        "label": "知识库稿",
+        "suffix": " - 知识库.md",
+        "format": "markdown",
+    },
+    "raw": {
+        "attr": "raw_path",
+        "label": "原始逐字稿",
+        "suffix": " - 原始逐字稿.txt",
+        "format": "text",
+    },
+    "metadata": {
+        "attr": "metadata_path",
+        "label": "转写信息",
+        "suffix": " - 转写信息.json",
+        "format": "json",
+    },
+}
+
 ENV_DEFAULTS = {
     "download_dir": DOWNLOAD_DIR,
     "openrouter_base_url": OPENROUTER_BASE_URL,
@@ -211,7 +266,36 @@ SECRET_SETTING_KEYS = {
     "article_draft_api_key",
     "knowledge_draft_api_key",
 }
+SECRET_BACKED_BASE_URL_FIELDS = {
+    "openrouter_base_url": "openrouter_api_key",
+    "ai_cleanup_base_url": "ai_cleanup_api_key",
+    "article_draft_base_url": "article_draft_api_key",
+    "knowledge_draft_base_url": "knowledge_draft_api_key",
+}
 LEGACY_APP_TITLES = {"Downloader by Qianzhu"}
+BARE_URL_CANDIDATE_RE = re.compile(
+    r"""(?ix)
+    \b(
+        (?:www\.)?(?:youtube\.com|youtu\.be|bilibili\.com|b23\.tv|douyin\.com)/
+        |v\.douyin\.com/
+    )\S+
+    """
+)
+UNSAFE_WEB_HOSTNAMES = {
+    "localhost",
+    "localhost.localdomain",
+    "instance-data",
+    "instance-data.ec2.internal",
+    "metadata",
+    "metadata.google.internal",
+    "host.docker.internal",
+    "gateway.docker.internal",
+}
+UNSAFE_WEB_HOST_SUFFIXES = (
+    ".localhost",
+    ".localdomain",
+    ".ec2.internal",
+)
 
 
 @dataclass
@@ -221,6 +305,7 @@ class Job:
     preset: str
     use_cookies: bool
     generate_transcript: bool
+    generate_knowledge: bool = False
     output_dir: str | None = None
     created_at: float = field(default_factory=time.time)
     title: str = "Fetching info..."
@@ -230,17 +315,47 @@ class Job:
     error: str | None = None
     artifact_dir: str | None = None
     download_path: str | None = None
+    raw_path: str | None = None
+    article_path: str | None = None
     transcript_path: str | None = None
+    knowledge_path: str | None = None
+    metadata_path: str | None = None
     provider: str | None = None
     transcript_route: str | None = None
+    source_author: str | None = None
+    knowledge_error: str | None = None
     backend_error: str | None = None
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
-app = Flask(__name__)
+app = Flask(
+    __name__,
+    static_folder=str(STATIC_DIR),
+    template_folder=str(TEMPLATE_DIR),
+)
 jobs: dict[str, Job] = {}
 jobs_lock = threading.Lock()
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+
+
+def frontend_asset_version() -> int:
+    candidates = (
+        STATIC_DIR / "style.css",
+        STATIC_DIR / "app.js",
+        TEMPLATE_DIR / "index.html",
+    )
+    versions = [int(path.stat().st_mtime) for path in candidates if path.exists()]
+    return max(versions, default=1)
+
+
+def load_inline_frontend_assets() -> dict[str, str]:
+    css_text = (STATIC_DIR / "style.css").read_text(encoding="utf-8")
+    js_text = (STATIC_DIR / "app.js").read_text(encoding="utf-8")
+    return {
+        "inline_css": css_text,
+        # Prevent an accidental closing tag inside inline JS from terminating the script block.
+        "inline_js": js_text.replace("</script>", "<\\/script>"),
+    }
 
 
 def _coerce_bool(value: object, *, field_name: str) -> bool:
@@ -259,6 +374,10 @@ def download_root_path() -> Path | None:
     if not DOWNLOAD_ROOT_DIR:
         return None
     return Path(DOWNLOAD_ROOT_DIR).expanduser().resolve()
+
+
+def running_in_container() -> bool:
+    return Path("/.dockerenv").exists()
 
 
 def resolve_download_dir(value: str | None = None, *, create: bool = False) -> Path:
@@ -412,6 +531,7 @@ def current_runtime_settings() -> dict:
     return {
         "settings_path": str(settings_path()),
         "settings_dir": str(settings_config_dir()),
+        "runtime_environment": "container" if running_in_container() else "local",
         "download_dir": DOWNLOAD_DIR,
         "download_root_dir": str(download_root_path()) if download_root_path() else None,
         "download_root_locked": bool(download_root_path()),
@@ -460,18 +580,95 @@ def persist_runtime_settings(payload: dict, *, partial: bool = True) -> dict:
     return apply_runtime_settings(merged)
 
 
+def mask_secret_value(secret: str) -> str:
+    if not secret:
+        return ""
+    if len(secret) <= 8:
+        return "****"
+    return f"{secret[:4]}...{secret[-4:]}"
+
+
 def masked_runtime_settings() -> dict:
     payload = current_runtime_settings()
     for key in SECRET_SETTING_KEYS:
         secret = str(payload.get(key) or "")
         payload[f"{key}_configured"] = bool(secret)
-        if not secret:
-            payload[key] = ""
-        elif len(secret) <= 8:
-            payload[key] = "****"
-        else:
-            payload[key] = f"{secret[:4]}...{secret[-4:]}"
+        payload[key] = mask_secret_value(secret)
     return payload
+
+
+def sanitize_settings_update_payload(payload: dict) -> dict:
+    validate_secret_rotation_for_base_url_change(payload)
+    sanitized = dict(payload)
+    current = current_runtime_settings()
+
+    for key in SECRET_SETTING_KEYS:
+        if key not in sanitized:
+            continue
+        value = str(sanitized.get(key) or "").strip()
+        if value and value == mask_secret_value(str(current.get(key) or "")):
+            sanitized.pop(key)
+            continue
+        sanitized[key] = value
+
+    return sanitized
+
+
+def normalize_base_url_for_compare(value: object) -> str:
+    return str(value or "").strip().rstrip("/")
+
+
+def validate_secret_rotation_for_base_url_change(payload: dict) -> None:
+    current = current_runtime_settings()
+
+    for base_key, secret_key in SECRET_BACKED_BASE_URL_FIELDS.items():
+        if base_key not in payload:
+            continue
+
+        previous_base_url = normalize_base_url_for_compare(current.get(base_key))
+        next_base_url = normalize_base_url_for_compare(payload.get(base_key))
+        if next_base_url == previous_base_url:
+            continue
+
+        current_secret = str(current.get(secret_key) or "").strip()
+        if not current_secret:
+            continue
+
+        if secret_key not in payload:
+            raise ValueError(f"变更 {base_key} 时请重新输入对应 API Key，或显式清空。")
+
+        submitted_secret = str(payload.get(secret_key) or "").strip()
+        if submitted_secret and submitted_secret == mask_secret_value(current_secret):
+            raise ValueError(f"变更 {base_key} 时不能复用脱敏 API Key，请重新输入或显式清空。")
+
+
+def request_web_token() -> str:
+    header_token = request.headers.get(WEB_TOKEN_HEADER, "").strip()
+    if header_token:
+        return header_token
+
+    authorization = request.headers.get("Authorization", "").strip()
+    if authorization.lower().startswith("bearer "):
+        return authorization[7:].strip()
+
+    return ""
+
+
+def require_web_token(view_func):
+    @wraps(view_func)
+    def wrapper(*args, **kwargs):
+        if not WEB_TOKEN:
+            return view_func(*args, **kwargs)
+
+        if hmac.compare_digest(request_web_token(), WEB_TOKEN):
+            return view_func(*args, **kwargs)
+
+        response = jsonify({"error": "需要有效的 MUKU_WEB_TOKEN。", "token_required": True})
+        response.status_code = 401
+        response.headers["WWW-Authenticate"] = 'Bearer realm="Muku"'
+        return response
+
+    return wrapper
 
 
 apply_runtime_settings()
@@ -549,38 +746,209 @@ def parse_cookies_from_browser_spec(spec: str) -> tuple[str, str | None, str | N
     return (browser_name.lower(), profile, keyring.upper() if keyring else None, container)
 
 
-def platform_auth_configured(platform: str) -> bool:
+def _cookie_source_candidates(platform: str) -> tuple[dict[str, str], ...]:
     if platform == "YouTube":
-        return bool(
-            YOUTUBE_COOKIES_FROM_BROWSER
-            or YOUTUBE_COOKIES_PATH
-            or COOKIES_FROM_BROWSER
-            or COOKIES_PATH
+        return (
+            {
+                "kind": "browser",
+                "scope": "platform",
+                "config_key": "YOUTUBE_COOKIES_FROM_BROWSER",
+                "value": YOUTUBE_COOKIES_FROM_BROWSER,
+            },
+            {
+                "kind": "file",
+                "scope": "platform",
+                "config_key": "YOUTUBE_COOKIES_PATH",
+                "value": YOUTUBE_COOKIES_PATH,
+            },
+            {
+                "kind": "browser",
+                "scope": "global",
+                "config_key": "COOKIES_FROM_BROWSER",
+                "value": COOKIES_FROM_BROWSER,
+            },
+            {
+                "kind": "file",
+                "scope": "global",
+                "config_key": "COOKIES_PATH",
+                "value": COOKIES_PATH,
+            },
         )
     if platform == "Bilibili":
-        return bool(
-            BILIBILI_COOKIES_PATH
-            or BILIBILI_COOKIES_FROM_BROWSER
-            or COOKIES_PATH
-            or COOKIES_FROM_BROWSER
+        return (
+            {
+                "kind": "file",
+                "scope": "platform",
+                "config_key": "BILIBILI_COOKIES_PATH",
+                "value": BILIBILI_COOKIES_PATH,
+            },
+            {
+                "kind": "browser",
+                "scope": "platform",
+                "config_key": "BILIBILI_COOKIES_FROM_BROWSER",
+                "value": BILIBILI_COOKIES_FROM_BROWSER,
+            },
+            {
+                "kind": "file",
+                "scope": "global",
+                "config_key": "COOKIES_PATH",
+                "value": COOKIES_PATH,
+            },
+            {
+                "kind": "browser",
+                "scope": "global",
+                "config_key": "COOKIES_FROM_BROWSER",
+                "value": COOKIES_FROM_BROWSER,
+            },
         )
     if platform == "Douyin":
-        return bool(
-            DOUYIN_COOKIES_PATH
-            or DOUYIN_COOKIES_FROM_BROWSER
-            or COOKIES_PATH
-            or COOKIES_FROM_BROWSER
+        return (
+            {
+                "kind": "browser",
+                "scope": "platform",
+                "config_key": "DOUYIN_COOKIES_FROM_BROWSER",
+                "value": DOUYIN_COOKIES_FROM_BROWSER,
+            },
+            {
+                "kind": "file",
+                "scope": "platform",
+                "config_key": "DOUYIN_COOKIES_PATH",
+                "value": DOUYIN_COOKIES_PATH,
+            },
+            {
+                "kind": "browser",
+                "scope": "global",
+                "config_key": "COOKIES_FROM_BROWSER",
+                "value": COOKIES_FROM_BROWSER,
+            },
+            {
+                "kind": "file",
+                "scope": "global",
+                "config_key": "COOKIES_PATH",
+                "value": COOKIES_PATH,
+            },
         )
-    return bool(
-        COOKIES_PATH
-        or COOKIES_FROM_BROWSER
-        or YOUTUBE_COOKIES_PATH
-        or YOUTUBE_COOKIES_FROM_BROWSER
-        or BILIBILI_COOKIES_PATH
-        or BILIBILI_COOKIES_FROM_BROWSER
-        or DOUYIN_COOKIES_PATH
-        or DOUYIN_COOKIES_FROM_BROWSER
+    return (
+        {
+            "kind": "file",
+            "scope": "global",
+            "config_key": "COOKIES_PATH",
+            "value": COOKIES_PATH,
+        },
+        {
+            "kind": "browser",
+            "scope": "global",
+            "config_key": "COOKIES_FROM_BROWSER",
+            "value": COOKIES_FROM_BROWSER,
+        },
     )
+
+
+def _format_browser_cookie_source(spec: str) -> str:
+    browser_name, profile, keyring, container = parse_cookies_from_browser_spec(spec)
+    parts = [browser_name]
+    if profile:
+        parts.append(f"profile={profile}")
+    if keyring:
+        parts.append(f"keyring={keyring}")
+    if container:
+        parts.append(f"container={container}")
+    return ", ".join(parts)
+
+
+def platform_auth_state(platform: str) -> dict[str, object]:
+    if platform == "Unknown":
+        states = {
+            key: platform_auth_state(platform_name)
+            for key, platform_name in PLATFORM_AUTH_ORDER
+        }
+        return {
+            "platform": platform,
+            "configured": any(bool(state["configured"]) for state in states.values()),
+            "verified": any(bool(state["verified"]) for state in states.values()),
+            "status": "verified"
+            if any(bool(state["verified"]) for state in states.values())
+            else "configured_only"
+            if any(bool(state["configured"]) for state in states.values())
+            else "missing",
+            "runtime_environment": "container" if running_in_container() else "local",
+            "platforms": states,
+        }
+
+    selected = next(
+        (candidate for candidate in _cookie_source_candidates(platform) if str(candidate["value"]).strip()),
+        None,
+    )
+    state: dict[str, object] = {
+        "platform": platform,
+        "configured": False,
+        "verified": False,
+        "status": "missing",
+        "source_kind": "none",
+        "source_scope": None,
+        "source_config_key": None,
+        "source_path": None,
+        "source_browser": None,
+        "source_spec_valid": None,
+        "source_display": "not configured",
+        "runtime_environment": "container" if running_in_container() else "local",
+        "docker_risky": False,
+    }
+    if selected is None:
+        return state
+
+    state.update(
+        {
+            "configured": True,
+            "source_kind": selected["kind"],
+            "source_scope": selected["scope"],
+            "source_config_key": selected["config_key"],
+        }
+    )
+
+    if selected["kind"] == "file":
+        source_path = Path(str(selected["value"])).expanduser()
+        path_exists = source_path.exists()
+        state.update(
+            {
+                "verified": path_exists,
+                "status": "verified" if path_exists else "missing_file",
+                "source_path": str(source_path),
+                "source_display": f"{selected['config_key']}={source_path}",
+            }
+        )
+        return state
+
+    try:
+        browser_label = _format_browser_cookie_source(str(selected["value"]))
+    except ValueError:
+        state.update(
+            {
+                "status": "invalid",
+                "source_spec_valid": False,
+                "source_display": f"{selected['config_key']}={selected['value']}",
+            }
+        )
+        return state
+
+    state.update(
+        {
+            "status": "configured_only",
+            "source_browser": browser_label,
+            "source_spec_valid": True,
+            "source_display": f"{selected['config_key']}={browser_label}",
+            "docker_risky": running_in_container(),
+        }
+    )
+    return state
+
+
+def platform_auth_configured(platform: str) -> bool:
+    return bool(platform_auth_state(platform)["configured"])
+
+
+def platform_auth_verified(platform: str) -> bool:
+    return bool(platform_auth_state(platform)["verified"])
 
 
 def resolve_cookie_options(url: str) -> dict:
@@ -743,6 +1111,16 @@ def primary_info_dict(info: dict | None) -> dict | None:
     return info
 
 
+def extract_source_author(info: dict | None) -> str | None:
+    if not isinstance(info, dict):
+        return None
+    for key in ("uploader", "channel", "creator", "artist", "uploader_id"):
+        value = info.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
 def prepare_audio_for_transcription(audio_path: Path) -> Path:
     source_path = audio_path.expanduser().resolve()
     stat = source_path.stat()
@@ -784,6 +1162,209 @@ def prepare_audio_for_transcription(audio_path: Path) -> Path:
         return audio_path
 
 
+def _parse_bitrate_bits_per_second(value: str) -> int | None:
+    match = re.fullmatch(r"\s*(\d+(?:\.\d+)?)\s*([kKmM]?)\s*", str(value or ""))
+    if match is None:
+        return None
+
+    amount = float(match.group(1))
+    suffix = match.group(2).lower()
+    multiplier = 1
+    if suffix == "k":
+        multiplier = 1000
+    elif suffix == "m":
+        multiplier = 1000 * 1000
+    return max(1, int(amount * multiplier))
+
+
+def estimate_audio_duration_seconds(audio_path: Path) -> float | None:
+    bitrate_bps = _parse_bitrate_bits_per_second(TRANSCRIPTION_AUDIO_BITRATE)
+    if bitrate_bps is None:
+        return None
+    try:
+        size_bytes = audio_path.expanduser().resolve().stat().st_size
+    except OSError:
+        return None
+    if size_bytes <= 0:
+        return 0.0
+    return (size_bytes * 8) / bitrate_bps
+
+
+def should_chunk_audio_for_transcription(audio_path: Path) -> bool:
+    if not ENABLE_TRANSCRIPTION_CHUNKING:
+        return False
+    estimated_duration = estimate_audio_duration_seconds(audio_path)
+    if estimated_duration is None:
+        return False
+    return estimated_duration > TRANSCRIPTION_CHUNK_SECONDS
+
+
+def split_audio_for_transcription(audio_path: Path) -> list[Path]:
+    source_path = audio_path.expanduser().resolve()
+    if not ENABLE_TRANSCRIPTION_CHUNKING:
+        return [source_path]
+
+    stat = source_path.stat()
+    fingerprint = hashlib.sha1(
+        f"{source_path}:{stat.st_size}:{stat.st_mtime_ns}:{TRANSCRIPTION_CHUNK_SECONDS}".encode("utf-8")
+    ).hexdigest()[:12]
+    prepared_dir = Path(tempfile.gettempdir()) / "video-downloade-transcription"
+    chunk_dir = prepared_dir / f"{audio_path.stem}.{fingerprint}.chunks"
+    manifest_path = chunk_dir / ".complete"
+
+    existing_segments = sorted(chunk_dir.glob("chunk-*.mp3"))
+    if existing_segments and manifest_path.exists() and manifest_path.stat().st_mtime >= source_path.stat().st_mtime:
+        return existing_segments
+
+    if chunk_dir.exists():
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+    chunk_dir.mkdir(parents=True, exist_ok=True)
+
+    output_pattern = chunk_dir / "chunk-%03d.mp3"
+    command = [
+        FFMPEG_BIN,
+        "-y",
+        "-i",
+        str(source_path),
+        "-f",
+        "segment",
+        "-segment_time",
+        str(TRANSCRIPTION_CHUNK_SECONDS),
+        "-reset_timestamps",
+        "1",
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        "16000",
+        "-codec:a",
+        "libmp3lame",
+        "-b:a",
+        TRANSCRIPTION_AUDIO_BITRATE,
+        str(output_pattern),
+    ]
+
+    try:
+        subprocess.run(
+            command,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, subprocess.CalledProcessError):
+        return [source_path]
+
+    segments = sorted(chunk_dir.glob("chunk-*.mp3"))
+    if not segments:
+        return [source_path]
+    manifest_path.write_text(json.dumps({"chunk_seconds": TRANSCRIPTION_CHUNK_SECONDS}) + "\n", encoding="utf-8")
+    return segments
+
+
+def cleanup_transcription_chunks(chunk_paths: list[Path]) -> None:
+    if not chunk_paths:
+        return
+    chunk_dir = chunk_paths[0].parent
+    if chunk_dir.name.endswith(".chunks"):
+        shutil.rmtree(chunk_dir, ignore_errors=True)
+
+
+def merge_transcript_chunks(chunks: list[str]) -> str:
+    merged_parts: list[str] = []
+    for chunk in chunks:
+        normalized = normalize_raw_transcript_text(chunk).strip()
+        if not normalized:
+            continue
+        if merged_parts:
+            previous_lines = [line.strip() for line in merged_parts[-1].splitlines() if line.strip()]
+            current_lines = [line.strip() for line in normalized.splitlines() if line.strip()]
+            if previous_lines and current_lines and previous_lines[-1] == current_lines[0]:
+                current_lines = current_lines[1:]
+                normalized = "\n".join(current_lines).strip()
+        if normalized:
+            merged_parts.append(normalized)
+    return "\n\n".join(merged_parts).strip()
+
+
+def build_chunked_transcript_route(base_route: str) -> str:
+    route = str(base_route or "audio_transcription").strip() or "audio_transcription"
+    if route.endswith("_chunked"):
+        return route
+    return f"{route}_chunked"
+
+
+def should_retry_transcription_with_chunks(exc: Exception) -> bool:
+    if not ENABLE_TRANSCRIPTION_CHUNKING:
+        return False
+    message = str(exc).strip().lower()
+    if not message:
+        return False
+    return "truncated before completion" in message
+
+
+def transcribe_audio_in_chunks(job: Job, audio_path: Path, *, fallback_error: Exception | None = None) -> dict:
+    chunk_paths = split_audio_for_transcription(audio_path)
+    if len(chunk_paths) <= 1:
+        if fallback_error is not None:
+            raise fallback_error
+        result = transcribe_audio(
+            chunk_paths[0],
+            title=job.title,
+            source_url=job.url,
+            language_hint=TRANSCRIPTION_LANGUAGE,
+        )
+        return {
+            **result,
+            "chunked": False,
+            "chunk_count": 1,
+            "chunk_paths": [str(chunk_paths[0])],
+        }
+
+    chunk_texts: list[str] = []
+    chunk_responses: list[dict[str, object]] = []
+    for index, chunk_path in enumerate(chunk_paths, start=1):
+        set_job_state(
+            job,
+            status=f"Transcribing chunk {index}/{len(chunk_paths)} with {OPENROUTER_TRANSCRIPTION_MODEL}...",
+        )
+        result = transcribe_audio(
+            chunk_path,
+            title=f"{job.title} [chunk {index}/{len(chunk_paths)}]",
+            source_url=job.url,
+            language_hint=TRANSCRIPTION_LANGUAGE,
+        )
+        chunk_text = normalize_raw_transcript_text(result["text"]).strip()
+        if not chunk_text:
+            raise RuntimeError(f"Chunk {index}/{len(chunk_paths)} returned an empty transcript.")
+        chunk_texts.append(chunk_text)
+        chunk_responses.append(
+            {
+                "index": index,
+                "path": str(chunk_path),
+                "response": result["raw_response"],
+            }
+        )
+
+    merged_text = merge_transcript_chunks(chunk_texts)
+    if not merged_text:
+        raise RuntimeError("Chunked transcription returned an empty transcript.")
+
+    return {
+        "provider": "openrouter",
+        "model": OPENROUTER_TRANSCRIPTION_MODEL,
+        "text": merged_text,
+        "raw_response": {
+            "chunked": True,
+            "chunk_count": len(chunk_paths),
+            "fallback_error": str(fallback_error) if fallback_error else None,
+            "chunks": chunk_responses,
+        },
+        "chunked": True,
+        "chunk_count": len(chunk_paths),
+        "chunk_paths": [str(path) for path in chunk_paths],
+    }
+
+
 def sanitize_output_component(value: str) -> str:
     sanitized = re.sub(r'[<>:"/\\\\|?*\x00-\x1f]', "_", value).strip().rstrip(".")
     return sanitized or "untitled"
@@ -820,13 +1401,109 @@ def extract_urls_from_text(text: str) -> list[str]:
     return urls
 
 
+def extract_bare_urls_from_text(text: str) -> list[str]:
+    urls: list[str] = []
+    seen: set[str] = set()
+
+    for match in BARE_URL_CANDIDATE_RE.finditer(text):
+        normalized = normalize_shared_url(match.group(0))
+        if normalized and not normalized.startswith(("http://", "https://")):
+            normalized = f"https://{normalized}"
+        if not normalized or normalized in seen:
+            continue
+        seen.add(normalized)
+        urls.append(normalized)
+
+    return urls
+
+
 def collect_url_inputs(text: str) -> list[str]:
     urls = extract_urls_from_text(text)
     if urls:
         return urls
 
+    bare_urls = extract_bare_urls_from_text(text)
+    if bare_urls:
+        return bare_urls
+
     stripped = text.strip()
     return [stripped] if stripped else []
+
+
+def has_url_like_input(text: str) -> bool:
+    return bool(extract_urls_from_text(text) or BARE_URL_CANDIDATE_RE.search(text))
+
+
+def is_unsafe_ip_address(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    return any(
+        (
+            address.is_loopback,
+            address.is_link_local,
+            address.is_private,
+            address.is_multicast,
+            address.is_reserved,
+            address.is_unspecified,
+        )
+    )
+
+
+def parse_relaxed_ip_address(hostname: str) -> ipaddress.IPv4Address | ipaddress.IPv6Address | None:
+    try:
+        return ipaddress.ip_address(hostname)
+    except ValueError:
+        pass
+
+    try:
+        return ipaddress.IPv4Address(socket.inet_aton(hostname))
+    except (ipaddress.AddressValueError, OSError):
+        return None
+
+
+def hostname_resolves_to_unsafe_ip(hostname: str) -> bool:
+    try:
+        addrinfo = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
+    except OSError:
+        return False
+
+    saw_parseable_address = False
+    for _family, _type, _proto, _canonname, sockaddr in addrinfo:
+        candidate = str(sockaddr[0]).split("%", 1)[0]
+        try:
+            address = ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        saw_parseable_address = True
+        if not is_unsafe_ip_address(address):
+            return False
+    return saw_parseable_address
+
+
+def is_unsafe_web_url_target(url: str) -> bool:
+    parsed = urlparse(url)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return True
+
+    hostname = (parsed.hostname or "").strip().rstrip(".").lower()
+    if not hostname:
+        return True
+
+    if hostname in UNSAFE_WEB_HOSTNAMES or any(hostname.endswith(suffix) for suffix in UNSAFE_WEB_HOST_SUFFIXES):
+        return True
+
+    address = parse_relaxed_ip_address(hostname)
+    if address is not None:
+        return is_unsafe_ip_address(address)
+
+    return hostname_resolves_to_unsafe_ip(hostname)
+
+
+def validate_web_start_urls(urls: list[str]) -> None:
+    if len(urls) > MAX_START_URLS:
+        raise ValueError(f"单次最多提交 {MAX_START_URLS} 个链接，请分批提交。")
+
+    for url in urls:
+        if is_unsafe_web_url_target(url):
+            raise ValueError("Web 面板不允许访问本机、内网、保留网段或云元数据地址。")
 
 
 def build_artifact_base_path(info: dict, *, base_dir: str | Path | None = None) -> Path:
@@ -839,12 +1516,14 @@ def build_artifact_base_path(info: dict, *, base_dir: str | Path | None = None) 
 
 def build_subtitle_probe_options(job: Job, *, temp_dir: Path) -> dict:
     options = build_ydl_options(job, preset_name=AUDIO_PRESET_NAME, base_dir=temp_dir)
+    options.pop("format", None)
     options.pop("postprocessors", None)
     options["progress_hooks"] = []
     options["skip_download"] = True
+    options["outtmpl"] = str(temp_dir / "subtitle-probe.%(ext)s")
     options["writesubtitles"] = True
     options["writeautomaticsub"] = True
-    options["subtitleslangs"] = list(SUBTITLE_LANGUAGES)
+    options["subtitleslangs"] = ["all"]
     options["subtitlesformat"] = SUBTITLE_FORMATS
     return options
 
@@ -857,7 +1536,30 @@ def _subtitle_language_rank(lang: str) -> int:
     return len(SUBTITLE_LANGUAGES)
 
 
-def _collect_subtitle_candidates(info: dict) -> list[dict]:
+def _collect_downloaded_subtitle_candidates(temp_dir: Path) -> list[dict]:
+    candidates: list[dict] = []
+    for path in temp_dir.rglob("*"):
+        if not path.is_file():
+            continue
+        suffixes = path.suffixes
+        if len(suffixes) < 2:
+            continue
+        lang = suffixes[-2].lstrip(".").strip()
+        ext = suffixes[-1].lstrip(".").strip() or "unknown"
+        if not lang or lang == "danmaku":
+            continue
+        candidates.append(
+            {
+                "path": path,
+                "lang": lang,
+                "ext": ext,
+                "source": "automatic captions" if lang.startswith("ai-") else "manual subtitles",
+            }
+        )
+    return candidates
+
+
+def _collect_subtitle_candidates(info: dict, *, temp_dir: Path | None = None) -> list[dict]:
     requested_subtitles = info.get("requested_subtitles") or {}
     manual_languages = set((info.get("subtitles") or {}).keys())
     candidates: list[dict] = []
@@ -877,6 +1579,8 @@ def _collect_subtitle_candidates(info: dict) -> list[dict]:
                 "source": source,
             }
         )
+    if not candidates and temp_dir is not None:
+        candidates.extend(_collect_downloaded_subtitle_candidates(temp_dir))
     candidates.sort(
         key=lambda item: (
             item["source"] != "manual subtitles",
@@ -983,17 +1687,20 @@ def try_extract_direct_subtitles(job: Job) -> dict | None:
         if not isinstance(info, dict):
             return None
 
-        with job.lock:
-            job.title = info.get("title", job.title)
+        primary_info = primary_info_dict(info) or info
 
-        candidates = _collect_subtitle_candidates(info)
+        with job.lock:
+            job.title = primary_info.get("title", job.title)
+            job.source_author = extract_source_author(primary_info)
+
+        candidates = _collect_subtitle_candidates(primary_info, temp_dir=temp_dir)
         for candidate in candidates:
             raw_text = normalize_raw_transcript_text(load_subtitle_text(candidate["path"])).strip()
             if not raw_text:
                 continue
             return {
                 "artifact_base_path": build_artifact_base_path(
-                    info,
+                    primary_info,
                     base_dir=job.output_dir or DOWNLOAD_DIR,
                 ),
                 "raw_text": raw_text,
@@ -1006,6 +1713,7 @@ def try_extract_direct_subtitles(job: Job) -> dict | None:
                 },
                 "meta": {
                     "transcript_route": "direct_subtitles",
+                    "source_author": job.source_author,
                     "subtitle_language": candidate["lang"],
                     "subtitle_format": candidate["ext"],
                     "subtitle_source": candidate["source"],
@@ -1014,6 +1722,171 @@ def try_extract_direct_subtitles(job: Job) -> dict | None:
     finally:
         shutil.rmtree(temp_dir, ignore_errors=True)
     return None
+
+
+def write_metadata_file(meta_path: Path, metadata: dict) -> None:
+    meta_path.write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def attach_artifact_paths_to_job(job: Job, artifact_paths: dict[str, Path]) -> None:
+    job.raw_path = str(artifact_paths["raw_path"]) if artifact_paths["raw_path"].exists() else None
+    job.article_path = (
+        str(artifact_paths["article_path"]) if artifact_paths["article_path"].exists() else None
+    )
+    job.transcript_path = (
+        str(artifact_paths["markdown_path"]) if artifact_paths["markdown_path"].exists() else None
+    )
+    job.knowledge_path = (
+        str(artifact_paths["knowledge_path"]) if artifact_paths["knowledge_path"].exists() else None
+    )
+    job.metadata_path = (
+        str(artifact_paths["meta_path"]) if artifact_paths["meta_path"].exists() else None
+    )
+
+
+def infer_artifact_base_path_from_known_path(path: Path) -> Path:
+    name = path.name
+    for config in ARTIFACT_PREVIEW_FIELDS.values():
+        suffix = config["suffix"]
+        if name.endswith(suffix):
+            return path.with_name(name[: -len(suffix)])
+    return path
+
+
+def infer_artifact_paths_for_job(job: Job) -> dict[str, Path] | None:
+    candidates = (
+        job.metadata_path,
+        job.transcript_path,
+        job.article_path,
+        job.knowledge_path,
+        job.raw_path,
+        job.download_path,
+    )
+    for candidate in candidates:
+        if not candidate:
+            continue
+        return build_artifact_paths(infer_artifact_base_path_from_known_path(Path(candidate)))
+    return None
+
+
+def path_within_directory(path: Path, directory: Path) -> bool:
+    try:
+        path.relative_to(directory)
+        return True
+    except ValueError:
+        return False
+
+
+def resolve_job_artifact_path(job: Job, artifact_kind: str) -> Path | None:
+    config = ARTIFACT_PREVIEW_FIELDS.get(artifact_kind)
+    if config is None:
+        return None
+
+    configured_path = getattr(job, config["attr"], None)
+    candidate = Path(configured_path).expanduser().resolve() if configured_path else None
+
+    if candidate is None:
+        inferred_paths = infer_artifact_paths_for_job(job)
+        if inferred_paths is None:
+            return None
+        inferred_key = {
+            "raw": "raw_path",
+            "article": "article_path",
+            "transcript": "markdown_path",
+            "knowledge": "knowledge_path",
+            "metadata": "meta_path",
+        }[artifact_kind]
+        candidate = inferred_paths[inferred_key].expanduser().resolve()
+
+    artifact_dir = Path(job.artifact_dir).expanduser().resolve() if job.artifact_dir else None
+    if artifact_dir is not None and not path_within_directory(candidate, artifact_dir):
+        return None
+    return candidate
+
+
+def read_text_preview(path: Path, *, limit: int = ARTIFACT_PREVIEW_CHAR_LIMIT) -> tuple[str, bool]:
+    with path.open("r", encoding="utf-8", errors="replace") as handle:
+        content = handle.read(limit + 1)
+    truncated = len(content) > limit
+    if truncated:
+        content = content[:limit]
+    return content, truncated
+
+
+def build_knowledge_source_text(
+    *,
+    markdown_text: str,
+    article_text: str | None,
+    raw_text: str,
+) -> str:
+    sections: list[str] = []
+    if markdown_text.strip():
+        sections.append("## 逐字稿\n\n" + markdown_text.strip())
+    if article_text and article_text.strip():
+        sections.append("## 解析稿\n\n" + article_text.strip())
+    if raw_text.strip():
+        sections.append("## 原始逐字稿\n\n" + raw_text.strip())
+    return "\n\n".join(section for section in sections if section.strip()).strip()
+
+
+def run_knowledge_pipeline(
+    job: Job,
+    *,
+    artifact_paths: dict[str, Path],
+    metadata: dict,
+    raw_text: str,
+    markdown_text: str,
+    article_text: str | None,
+    platform: str,
+) -> None:
+    knowledge_path = artifact_paths["knowledge_path"]
+    if knowledge_path.exists():
+        job.knowledge_path = str(knowledge_path)
+        job.knowledge_error = None
+        return
+
+    set_job_state(job, status=f"Generating knowledge with {cleanup_backend.KNOWLEDGE_DRAFT_MODEL}...")
+    try:
+        source_text = build_knowledge_source_text(
+            markdown_text=markdown_text,
+            article_text=article_text,
+            raw_text=raw_text,
+        )
+        knowledge_result = generate_knowledge_draft(
+            text=source_text,
+            title=job.title,
+            source_url=job.url,
+            platform=platform,
+        )
+        knowledge_text = knowledge_result["text"].strip()
+        knowledge_path.parent.mkdir(parents=True, exist_ok=True)
+        knowledge_path.write_text(knowledge_text + "\n", encoding="utf-8")
+
+        metadata["knowledge_provider"] = knowledge_result["provider"]
+        metadata["knowledge_model"] = knowledge_result["model"]
+        metadata["knowledge_base_url"] = cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL
+        metadata["knowledge_prompt_file"] = cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE
+        metadata["knowledge_prompt_source"] = (
+            "inline" if cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_TEXT.strip() else "file"
+        )
+        metadata["knowledge_error"] = None
+        metadata["knowledge_response"] = knowledge_result["raw_response"]
+        write_metadata_file(artifact_paths["meta_path"], metadata)
+
+        job.knowledge_path = str(knowledge_path)
+        job.knowledge_error = None
+    except Exception as exc:
+        metadata["knowledge_base_url"] = cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL
+        metadata["knowledge_prompt_file"] = cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE
+        metadata["knowledge_prompt_source"] = (
+            "inline" if cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_TEXT.strip() else "file"
+        )
+        metadata["knowledge_error"] = str(exc)
+        write_metadata_file(artifact_paths["meta_path"], metadata)
+        job.knowledge_error = str(exc)
 
 
 def run_text_pipeline(
@@ -1033,18 +1906,34 @@ def run_text_pipeline(
     article_path = artifact_paths["article_path"]
     markdown_path = artifact_paths["markdown_path"]
     meta_path = artifact_paths["meta_path"]
+    knowledge_path = artifact_paths["knowledge_path"]
 
     article_ready = article_path.exists() or not ENABLE_ARTICLE_DRAFT
     if raw_path.exists() and markdown_path.exists() and meta_path.exists() and article_ready:
         job.artifact_dir = str(artifact_base_path.parent)
-        job.transcript_path = str(markdown_path)
+        attach_artifact_paths_to_job(job, artifact_paths)
         job.provider = transcript_provider
-        if meta_path.exists():
-            try:
-                metadata = json.loads(meta_path.read_text(encoding="utf-8"))
-                job.transcript_route = metadata.get("transcript_route")
-            except json.JSONDecodeError:
-                job.transcript_route = None
+
+        try:
+            existing_metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            existing_metadata = {}
+        job.transcript_route = existing_metadata.get("transcript_route")
+        job.knowledge_error = existing_metadata.get("knowledge_error")
+
+        if not job.generate_knowledge or knowledge_path.exists():
+            return
+
+        existing_article_text = article_path.read_text(encoding="utf-8").strip() if article_path.exists() else None
+        run_knowledge_pipeline(
+            job,
+            artifact_paths=artifact_paths,
+            metadata=existing_metadata,
+            raw_text=raw_path.read_text(encoding="utf-8").strip(),
+            markdown_text=markdown_path.read_text(encoding="utf-8").strip(),
+            article_text=existing_article_text,
+            platform=existing_metadata.get("platform") or detect_platform(job.url),
+        )
         return
 
     cleanup_provider = None
@@ -1058,6 +1947,7 @@ def run_text_pipeline(
     article_error = None
     platform = detect_platform(job.url)
     metadata = dict(extra_meta or {})
+    source_author = str(metadata.get("source_author") or job.source_author or "").strip() or None
 
     set_job_state(job, status="Cleaning transcript...")
     clean_text = clean_transcript_text(raw_text) or raw_text
@@ -1092,6 +1982,7 @@ def run_text_pipeline(
                 title=job.title,
                 source_url=job.url,
                 platform=platform,
+                source_author=source_author,
             )
             article_text = article_result["text"].strip()
             article_provider = article_result["provider"]
@@ -1110,6 +2001,7 @@ def run_text_pipeline(
                     title=job.title,
                     source_url=job.url,
                     platform=platform,
+                    source_author=source_author,
                 )
                 article_text = article_result["text"].strip()
                 article_provider = article_result["provider"]
@@ -1129,6 +2021,7 @@ def run_text_pipeline(
         {
             "title": job.title,
             "platform": platform,
+            "source_author": source_author,
             "artifact_dir": str(artifact_base_path.parent),
             "prepared_audio_path": str(prepared_audio_path) if prepared_audio_path else None,
             "cleanup_provider": cleanup_provider,
@@ -1166,8 +2059,19 @@ def run_text_pipeline(
         extra_meta=metadata,
     )
 
+    if job.generate_knowledge:
+        run_knowledge_pipeline(
+            job,
+            artifact_paths=artifact_paths,
+            metadata=metadata,
+            raw_text=raw_text,
+            markdown_text=markdown_text,
+            article_text=article_text,
+            platform=platform,
+        )
+
     job.artifact_dir = str(artifact_base_path.parent)
-    job.transcript_path = str(artifact_paths["markdown_path"])
+    attach_artifact_paths_to_job(job, artifact_paths)
     job.provider = transcript_provider
     job.transcript_route = metadata.get("transcript_route")
 
@@ -1176,9 +2080,12 @@ def run_transcription_pipeline(job: Job, audio_path: Path, *, extra_meta: dict |
     artifact_paths = build_artifact_paths(audio_path)
     raw_path = artifact_paths["raw_path"]
     prepared_audio = audio_path
+    chunk_paths: list[Path] = []
     transcript_response = None
     transcript_provider = "openrouter"
     transcript_model = OPENROUTER_TRANSCRIPTION_MODEL
+    base_transcript_route = str((extra_meta or {}).get("transcript_route") or "audio_transcription")
+    transcription_route = base_transcript_route
 
     try:
         if raw_path.exists():
@@ -1187,13 +2094,28 @@ def run_transcription_pipeline(job: Job, audio_path: Path, *, extra_meta: dict |
             set_job_state(job, status="Preparing audio for OpenRouter transcription...")
             prepared_audio = prepare_audio_for_transcription(audio_path)
 
-            set_job_state(job, status=f"Transcribing with {OPENROUTER_TRANSCRIPTION_MODEL}...")
-            transcript_result = transcribe_audio(
-                prepared_audio,
-                title=job.title,
-                source_url=job.url,
-                language_hint=TRANSCRIPTION_LANGUAGE,
-            )
+            if should_chunk_audio_for_transcription(prepared_audio):
+                set_job_state(job, status="Audio looks long. Splitting into chunks before transcription...")
+                transcript_result = transcribe_audio_in_chunks(job, prepared_audio)
+                transcription_route = build_chunked_transcript_route(base_transcript_route)
+                chunk_paths = [Path(path) for path in transcript_result.get("chunk_paths", [])]
+            else:
+                set_job_state(job, status=f"Transcribing with {OPENROUTER_TRANSCRIPTION_MODEL}...")
+                try:
+                    transcript_result = transcribe_audio(
+                        prepared_audio,
+                        title=job.title,
+                        source_url=job.url,
+                        language_hint=TRANSCRIPTION_LANGUAGE,
+                    )
+                except Exception as exc:
+                    if not should_retry_transcription_with_chunks(exc):
+                        raise
+                    set_job_state(job, status="Transcription truncated. Retrying with audio chunks...")
+                    transcript_result = transcribe_audio_in_chunks(job, prepared_audio, fallback_error=exc)
+                    transcription_route = build_chunked_transcript_route(base_transcript_route)
+                    chunk_paths = [Path(path) for path in transcript_result.get("chunk_paths", [])]
+
             raw_text = normalize_raw_transcript_text(transcript_result["text"]).strip()
             if not raw_text:
                 raise RuntimeError("OpenRouter returned an empty transcript.")
@@ -1201,7 +2123,13 @@ def run_transcription_pipeline(job: Job, audio_path: Path, *, extra_meta: dict |
             transcript_model = transcript_result["model"]
             transcript_response = transcript_result["raw_response"]
 
-        metadata = {"transcript_route": "audio_transcription", **(extra_meta or {})}
+        metadata = {
+            **(extra_meta or {}),
+            "transcript_route": transcription_route,
+            "transcription_chunked": bool(chunk_paths),
+            "transcription_chunk_count": len(chunk_paths) if chunk_paths else None,
+            "transcription_chunk_seconds": TRANSCRIPTION_CHUNK_SECONDS if chunk_paths else None,
+        }
         run_text_pipeline(
             job,
             artifact_base_path=audio_path,
@@ -1214,6 +2142,8 @@ def run_transcription_pipeline(job: Job, audio_path: Path, *, extra_meta: dict |
             extra_meta=metadata,
         )
     finally:
+        if chunk_paths and not KEEP_TRANSCRIPTION_INPUT:
+            cleanup_transcription_chunks(chunk_paths)
         if (
             prepared_audio != audio_path
             and prepared_audio.exists()
@@ -1259,6 +2189,7 @@ def download_media(job: Job, preset_name: str) -> Path:
                 selected_info = preview_info
                 with job.lock:
                     job.title = preview_info.get("title", job.url)
+                    job.source_author = extract_source_author(preview_info)
         except Exception:
             pass
 
@@ -1267,6 +2198,7 @@ def download_media(job: Job, preset_name: str) -> Path:
             selected_info = download_info
             with job.lock:
                 job.title = download_info.get("title", job.title)
+                job.source_author = extract_source_author(download_info)
 
         if selected_info is None:
             raise RuntimeError("Unable to determine downloaded media path safely.")
@@ -1285,7 +2217,10 @@ def run_transcript_job(job: Job) -> None:
         run_transcription_pipeline(
             job,
             media_path,
-            extra_meta={"transcript_route": "douyin_audio_transcription"},
+            extra_meta={
+                "transcript_route": "douyin_audio_transcription",
+                "source_author": job.source_author,
+            },
         )
         return
 
@@ -1323,6 +2258,7 @@ def run_transcript_job(job: Job) -> None:
         extra_meta={
             "transcript_route": "subtitle_probe_fallback_to_audio",
             "subtitle_probe_error": subtitle_probe_error,
+            "source_author": job.source_author,
         },
     )
 
@@ -1340,8 +2276,21 @@ def run_job(job: Job) -> Job:
 
         with job.lock:
             job.done = True
-            job.status = "Done · transcript ready" if job.transcript_path else "Done"
+            if job.generate_knowledge:
+                if job.knowledge_path:
+                    job.status = "Done · knowledge ready"
+                elif job.transcript_path:
+                    job.status = (
+                        "Done · transcript ready · knowledge failed"
+                        if job.knowledge_error
+                        else "Done · transcript ready"
+                    )
+                else:
+                    job.status = "Done"
+            else:
+                job.status = "Done · transcript ready" if job.transcript_path else "Done"
             job.progress = 100
+            job.backend_error = None
     except Exception as exc:
         with job.lock:
             job.done = True
@@ -1359,17 +2308,31 @@ def worker(job_id: str) -> None:
     run_job(job)
 
 
+def build_platform_auth_payload() -> dict[str, object]:
+    states = {
+        key: platform_auth_state(platform_name)
+        for key, platform_name in PLATFORM_AUTH_ORDER
+    }
+    payload: dict[str, object] = {
+        "runtime_environment": "container" if running_in_container() else "local",
+        "cookiesConfigured": any(bool(state["configured"]) for state in states.values()),
+        "cookiesVerified": any(bool(state["verified"]) for state in states.values()),
+        "platformAuth": states,
+    }
+    for key, _platform_name in PLATFORM_AUTH_ORDER:
+        payload[f"{key}AuthConfigured"] = bool(states[key]["configured"])
+        payload[f"{key}AuthVerified"] = bool(states[key]["verified"])
+    return payload
+
+
 def frontend_config() -> dict:
-    settings = current_runtime_settings()
+    settings = masked_runtime_settings()
+    auth_payload = build_platform_auth_payload()
     return {
         "presets": list(FORMAT_PRESETS.keys()),
         "defaultPreset": VIDEO_PRESET_NAME,
         "audioPreset": AUDIO_PRESET_NAME,
         "transcriptPreset": TRANSCRIPT_PRESET_NAME,
-        "cookiesConfigured": platform_auth_configured("Unknown"),
-        "youtubeAuthConfigured": platform_auth_configured("YouTube"),
-        "bilibiliAuthConfigured": platform_auth_configured("Bilibili"),
-        "douyinAuthConfigured": platform_auth_configured("Douyin"),
         "transcriptionEnabled": ENABLE_TRANSCRIPTION,
         "transcriptionProvider": "openrouter",
         "transcriptionModel": OPENROUTER_TRANSCRIPTION_MODEL,
@@ -1379,61 +2342,94 @@ def frontend_config() -> dict:
         "articleDraftEnabled": ENABLE_ARTICLE_DRAFT,
         "articleDraftProvider": ARTICLE_DRAFT_PROVIDER_LABEL,
         "articleDraftModel": ARTICLE_DRAFT_MODEL,
+        "webTokenRequired": bool(WEB_TOKEN),
         "settings": settings,
+        **auth_payload,
     }
 
 
 @app.route("/")
 def index():
+    asset_bundle = load_inline_frontend_assets()
     return render_template(
         "index.html",
         app_title=APP_TITLE,
         config_json=json.dumps(frontend_config()),
+        asset_version=frontend_asset_version(),
+        inline_css=asset_bundle["inline_css"],
+        inline_js=asset_bundle["inline_js"],
     )
 
 
 @app.route("/api/settings")
+@require_web_token
 def get_settings():
-    payload = current_runtime_settings()
+    payload = masked_runtime_settings()
+    auth_payload = build_platform_auth_payload()
+    payload.update(auth_payload)
     payload.update(
         {
-            "youtube_auth_configured": platform_auth_configured("YouTube"),
-            "bilibili_auth_configured": platform_auth_configured("Bilibili"),
-            "douyin_auth_configured": platform_auth_configured("Douyin"),
+            "youtube_auth_configured": auth_payload["youtubeAuthConfigured"],
+            "youtube_auth_verified": auth_payload["youtubeAuthVerified"],
+            "bilibili_auth_configured": auth_payload["bilibiliAuthConfigured"],
+            "bilibili_auth_verified": auth_payload["bilibiliAuthVerified"],
+            "douyin_auth_configured": auth_payload["douyinAuthConfigured"],
+            "douyin_auth_verified": auth_payload["douyinAuthVerified"],
+            "platform_auth": auth_payload["platformAuth"],
         }
     )
     return jsonify(payload)
 
 
 @app.route("/api/settings", methods=["POST"])
+@require_web_token
 def update_settings():
     data = request.json or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "Invalid settings payload"}), 400
     try:
-        settings = persist_runtime_settings(data, partial=False)
+        persist_runtime_settings(sanitize_settings_update_payload(data), partial=True)
+        settings = masked_runtime_settings()
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
 
     payload = dict(settings)
+    auth_payload = build_platform_auth_payload()
+    payload.update(auth_payload)
     payload.update(
         {
-            "youtube_auth_configured": platform_auth_configured("YouTube"),
-            "bilibili_auth_configured": platform_auth_configured("Bilibili"),
-            "douyin_auth_configured": platform_auth_configured("Douyin"),
+            "youtube_auth_configured": auth_payload["youtubeAuthConfigured"],
+            "youtube_auth_verified": auth_payload["youtubeAuthVerified"],
+            "bilibili_auth_configured": auth_payload["bilibiliAuthConfigured"],
+            "bilibili_auth_verified": auth_payload["bilibiliAuthVerified"],
+            "douyin_auth_configured": auth_payload["douyinAuthConfigured"],
+            "douyin_auth_verified": auth_payload["douyinAuthVerified"],
+            "platform_auth": auth_payload["platformAuth"],
         }
     )
     return jsonify(payload)
 
 
 @app.route("/api/start", methods=["POST"])
+@require_web_token
 def start():
     data = request.json or {}
-    urls = collect_url_inputs(str(data.get("url", "")))
+    raw_input = str(data.get("url", ""))
+    if raw_input.strip() and not has_url_like_input(raw_input):
+        return jsonify({"error": "请输入有效的视频链接，或包含链接的 Bilibili / YouTube / Douyin 分享文案。"}), 400
+
+    urls = collect_url_inputs(raw_input)
     if not urls:
         return jsonify({"error": "没有识别到可用链接。支持直接粘贴 URL，或粘贴 Bilibili / YouTube / Douyin 分享文案。"}), 400
+    try:
+        validate_web_start_urls(urls)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
 
     preset = data.get("preset")
     use_cookies = bool(data.get("use_cookies"))
     generate_transcript = bool(data.get("generate_transcript"))
+    generate_knowledge = bool(data.get("generate_knowledge"))
     download_dir_raw = str(data.get("download_dir") or "").strip()
 
     if preset not in FORMAT_PRESETS:
@@ -1442,6 +2438,12 @@ def start():
         generate_transcript = True
     elif generate_transcript and preset != AUDIO_PRESET_NAME:
         return jsonify({"error": "提取 Markdown 逐字稿前，请先选择 Best Audio (MP3)。"}), 400
+    if generate_knowledge and not generate_transcript:
+        return jsonify({"error": "生成知识库稿前，请先选择 Markdown 逐字稿模式。"}), 400
+    if generate_knowledge and not ENABLE_KNOWLEDGE_DRAFT:
+        return jsonify({"error": "当前还没有启用知识库整理配置，请先在设置里开启。"}), 400
+    if generate_knowledge and not cleanup_backend.KNOWLEDGE_DRAFT_API_KEY:
+        return jsonify({"error": "当前还没有配置知识库 API Key，请先在设置里补齐。"}), 400
 
     try:
         download_dir = str(resolve_download_dir(download_dir_raw)) if download_dir_raw else None
@@ -1452,7 +2454,15 @@ def start():
     with jobs_lock:
         for url in urls:
             job_id = uuid.uuid4().hex
-            job = Job(job_id, url, preset, use_cookies, generate_transcript, output_dir=download_dir)
+            job = Job(
+                job_id=job_id,
+                url=url,
+                preset=preset,
+                use_cookies=use_cookies,
+                generate_transcript=generate_transcript,
+                generate_knowledge=generate_knowledge,
+                output_dir=download_dir,
+            )
             jobs[job_id] = job
             executor.submit(worker, job_id)
             added += 1
@@ -1460,6 +2470,7 @@ def start():
 
 
 @app.route("/api/tasks")
+@require_web_token
 def tasks():
     with jobs_lock:
         tasks_list = []
@@ -1476,15 +2487,54 @@ def tasks():
                     "backend_error": job.backend_error,
                     "artifact_dir": job.artifact_dir,
                     "download_path": job.download_path,
+                    "raw_path": job.raw_path,
+                    "article_path": job.article_path,
                     "transcript_path": job.transcript_path,
+                    "knowledge_path": job.knowledge_path,
+                    "metadata_path": job.metadata_path,
                     "provider": job.provider,
                     "preset": job.preset,
                     "output_dir": job.output_dir,
                     "transcript_route": job.transcript_route,
                     "generate_transcript": job.generate_transcript,
+                    "generate_knowledge": job.generate_knowledge,
+                    "knowledge_error": job.knowledge_error,
                 }
             )
     return jsonify({"tasks": tasks_list})
+
+
+@app.route("/api/tasks/<job_id>/artifacts/<artifact_kind>")
+@require_web_token
+def task_artifact_preview(job_id: str, artifact_kind: str):
+    config = ARTIFACT_PREVIEW_FIELDS.get(artifact_kind)
+    if config is None:
+        return jsonify({"error": "Unknown artifact kind"}), 404
+
+    with jobs_lock:
+        job = jobs.get(job_id)
+
+    if job is None:
+        return jsonify({"error": "Task not found"}), 404
+
+    path = resolve_job_artifact_path(job, artifact_kind)
+    if path is None:
+        return jsonify({"error": "Artifact not available"}), 404
+    if not path.exists():
+        return jsonify({"error": "Artifact file not found"}), 404
+
+    content, truncated = read_text_preview(path)
+    return jsonify(
+        {
+            "job_id": job_id,
+            "artifact_kind": artifact_kind,
+            "label": config["label"],
+            "path": str(path),
+            "format": config["format"],
+            "content": content,
+            "truncated": truncated,
+        }
+    )
 
 
 if __name__ == "__main__":

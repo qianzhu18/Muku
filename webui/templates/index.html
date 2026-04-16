@@ -18,7 +18,9 @@
       href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@500;700&family=Instrument+Sans:wght@400;500;600;700&display=swap"
       rel="stylesheet"
     />
-    <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}" />
+    <style>
+      {{ inline_css | safe }}
+    </style>
   </head>
   <body>
     <div id="settings-backdrop" class="settings-backdrop"></div>
@@ -57,6 +59,10 @@
                 <div class="field">
                   <label for="settings-openrouter-api-key">转写 API Key</label>
                   <input id="settings-openrouter-api-key" type="password" />
+                  <label class="switch-line" for="settings-openrouter-api-key-clear">
+                    <input id="settings-openrouter-api-key-clear" type="checkbox" />
+                    清空已保存的转写 API Key
+                  </label>
                 </div>
                 <div class="field">
                   <label for="settings-openrouter-transcription-model">转写模型</label>
@@ -93,6 +99,10 @@
                 <div class="field">
                   <label for="settings-cleanup-api-key">清洗 API Key</label>
                   <input id="settings-cleanup-api-key" type="password" />
+                  <label class="switch-line" for="settings-cleanup-api-key-clear">
+                    <input id="settings-cleanup-api-key-clear" type="checkbox" />
+                    清空已保存的清洗 API Key
+                  </label>
                 </div>
                 <div class="field">
                   <label for="settings-cleanup-model">清洗模型</label>
@@ -121,6 +131,10 @@
                 <div class="field">
                   <label for="settings-article-api-key">解析稿 API Key</label>
                   <input id="settings-article-api-key" type="password" />
+                  <label class="switch-line" for="settings-article-api-key-clear">
+                    <input id="settings-article-api-key-clear" type="checkbox" />
+                    清空已保存的解析稿 API Key
+                  </label>
                 </div>
                 <div class="field">
                   <label for="settings-article-model">解析稿模型</label>
@@ -135,11 +149,12 @@
           </details>
 
           <details class="settings-section">
-            <summary>知识库整理服务</summary>
+            <summary>知识库整理配置（Web 可选 / CLI / 后续能力复用）</summary>
             <div class="settings-section-body">
+              <p class="field-help">当前网页任务默认不会直接生成 `知识库.md`；补齐这些配置后，可以在提交任务时显式勾选继续生成知识库稿，也可以供 CLI `--knowledge` 和后续整理链路复用。</p>
               <label class="switch-line" for="settings-enable-knowledge">
                 <input id="settings-enable-knowledge" type="checkbox" />
-                启用知识库整理
+                启用知识库整理配置
               </label>
               <div class="settings-grid">
                 <div class="field">
@@ -149,6 +164,10 @@
                 <div class="field">
                   <label for="settings-knowledge-api-key">知识库 API Key</label>
                   <input id="settings-knowledge-api-key" type="password" />
+                  <label class="switch-line" for="settings-knowledge-api-key-clear">
+                    <input id="settings-knowledge-api-key-clear" type="checkbox" />
+                    清空已保存的知识库 API Key
+                  </label>
                 </div>
                 <div class="field">
                   <label for="settings-knowledge-model">知识库模型</label>
@@ -181,7 +200,7 @@
           <div class="brand-copy">
             <p class="eyebrow">Video to Markdown Workspace</p>
             <h1>幕库 Muku</h1>
-            <p>把 Bilibili、YouTube、Douyin 的高密度内容，收成你自己的 Markdown 知识库。</p>
+            <p>先把 Bilibili、YouTube、Douyin 的高密度内容整理成逐字稿和解析稿，再继续收入你自己的 Markdown 知识库。</p>
           </div>
         </div>
         <div class="header-actions">
@@ -194,6 +213,36 @@
 
       <section class="workspace">
         <div class="primary-column">
+          <section id="starter-guide" class="card starter-card">
+            <div class="starter-head">
+              <div class="card-header compact">
+                <p class="eyebrow">First Run Guide</p>
+                <h2 id="starter-title">第一次使用导航</h2>
+                <p id="starter-subtitle">先完成核心配置，再发起第一条任务。</p>
+              </div>
+              <span id="starter-progress" class="starter-progress">0 / 4</span>
+            </div>
+
+            <div class="starter-layout">
+              <ol id="starter-checklist" class="starter-checklist"></ol>
+
+              <div class="starter-side">
+                <div class="starter-side-block">
+                  <span class="starter-side-label">平台登录态</span>
+                  <div id="starter-platforms" class="starter-platforms"></div>
+                </div>
+
+                <div id="starter-callout" class="starter-callout"></div>
+
+                <div class="starter-actions">
+                  <button id="starter-open-settings" type="button" class="nav-button">
+                    打开设置
+                  </button>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <section class="card task-form-card">
             <div class="card-header">
               <h2>新建任务</h2>
@@ -238,8 +287,19 @@
                     <label for="use-cookies">登录态</label>
                     <label class="switch-line" for="use-cookies">
                       <input type="checkbox" id="use-cookies" />
-                      启用 Cookies（`cookies.txt` / 浏览器登录态）
+                      启用 Cookies（优先使用平台专用 `cookies.txt`）
                     </label>
+                  </div>
+
+                  <div class="field checkbox-field field-knowledge">
+                    <label for="generate-knowledge">知识库稿</label>
+                    <label class="switch-line" for="generate-knowledge">
+                      <input type="checkbox" id="generate-knowledge" />
+                      逐字稿完成后继续生成 `知识库.md`
+                    </label>
+                    <p class="field-help" id="knowledge-option-hint">
+                      仅在 Markdown 逐字稿模式下可用。
+                    </p>
                   </div>
 
                   <div class="field field-download-dir">
@@ -332,6 +392,8 @@
     <script>
       window.APP_CONFIG = {{ config_json | safe }};
     </script>
-    <script src="{{ url_for('static', filename='app.js') }}"></script>
+    <script>
+      {{ inline_js | safe }}
+    </script>
   </body>
 </html>

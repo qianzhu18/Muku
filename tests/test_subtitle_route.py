@@ -8,12 +8,97 @@ from click.testing import CliRunner
 
 from webui import app as web_app
 from webui import cli as web_cli
+from webui import openai_compatible_cleanup as cleanup_backend
+from webui import openrouter_backends as openrouter_backend
+from webui import transcript_pipeline
 
 
 class SubtitleParsingTests(unittest.TestCase):
+    def test_web_app_uses_repo_static_and_template_directories(self) -> None:
+        app_dir = Path(web_app.__file__).resolve().parent
+
+        self.assertEqual(Path(web_app.app.static_folder), app_dir / "static")
+        self.assertEqual(Path(web_app.app.template_folder), app_dir / "templates")
+
+    def test_index_inlines_frontend_assets(self) -> None:
+        with web_app.app.test_client() as client:
+            response = client.get("/")
+
+        html = response.get_data(as_text=True)
+        asset_bundle = web_app.load_inline_frontend_assets()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("<style>", html)
+        self.assertIn(":root {", html)
+        self.assertIn(asset_bundle["inline_css"][:64], html)
+        self.assertIn(asset_bundle["inline_js"][:64], html)
+        self.assertNotIn('/static/style.css?v=', html)
+        self.assertNotIn('/static/app.js?v=', html)
+
+    def test_render_markdown_outputs_clean_transcript_only(self) -> None:
+        rendered = transcript_pipeline.render_markdown(
+            title="Sample",
+            clean_text="第一段。\n\n第二段。",
+            raw_text="原始逐字稿",
+            article_text="# 解析稿",
+        )
+
+        self.assertEqual(rendered, "第一段。\n\n第二段。\n")
+
+    def test_build_article_payload_includes_source_author(self) -> None:
+        payload = cleanup_backend.build_article_payload(
+            text="逐字稿正文",
+            title="标题",
+            source_url="https://example.com/video",
+            platform="Bilibili",
+            source_author="酸老师",
+        )
+
+        user_message = payload["messages"][1]["content"]
+        self.assertIn("- 作者：酸老师", user_message)
+        self.assertIn("【逐字稿全文】", user_message)
+
+    def test_openrouter_headers_fall_back_to_ascii_title(self) -> None:
+        with mock.patch.object(openrouter_backend, "OPENROUTER_API_KEY", "sk-test"), mock.patch.object(
+            openrouter_backend, "OPENROUTER_APP_NAME", "幕库 Muku"
+        ), mock.patch.object(openrouter_backend, "OPENROUTER_SITE_URL", ""):
+            headers = openrouter_backend._headers()
+
+        self.assertEqual(headers["X-Title"], "Muku")
+
     def test_parse_cookies_from_browser_spec_supports_profile(self) -> None:
         parsed = web_app.parse_cookies_from_browser_spec("chrome:Profile 1")
         self.assertEqual(parsed, ("chrome", "Profile 1", None, None))
+
+    def test_platform_auth_state_marks_cookie_file_source_as_verified(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cookies_path = Path(temp_dir) / "youtube.cookies.txt"
+            cookies_path.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+
+            with mock.patch.object(web_app, "YOUTUBE_COOKIES_PATH", str(cookies_path)), mock.patch.object(
+                web_app, "YOUTUBE_COOKIES_FROM_BROWSER", ""
+            ), mock.patch.object(web_app, "COOKIES_PATH", ""), mock.patch.object(
+                web_app, "COOKIES_FROM_BROWSER", ""
+            ):
+                state = web_app.platform_auth_state("YouTube")
+
+        self.assertTrue(state["configured"])
+        self.assertTrue(state["verified"])
+        self.assertEqual(state["status"], "verified")
+        self.assertEqual(state["source_kind"], "file")
+
+    def test_platform_auth_state_marks_browser_source_as_configured_only_in_container(self) -> None:
+        with mock.patch.object(web_app, "YOUTUBE_COOKIES_PATH", ""), mock.patch.object(
+            web_app, "YOUTUBE_COOKIES_FROM_BROWSER", "chrome"
+        ), mock.patch.object(web_app, "COOKIES_PATH", ""), mock.patch.object(
+            web_app, "COOKIES_FROM_BROWSER", ""
+        ), mock.patch.object(web_app, "running_in_container", return_value=True):
+            state = web_app.platform_auth_state("YouTube")
+
+        self.assertTrue(state["configured"])
+        self.assertFalse(state["verified"])
+        self.assertEqual(state["status"], "configured_only")
+        self.assertTrue(state["docker_risky"])
 
     def test_detect_platform_supports_douyin_web_and_share_urls(self) -> None:
         self.assertEqual(
@@ -67,6 +152,232 @@ class SubtitleParsingTests(unittest.TestCase):
         urls = web_app.collect_url_inputs(share_text)
 
         self.assertEqual(urls, ["https://v.douyin.com/iABCDE12/"])
+
+    def test_subtitle_language_rank_prioritizes_bilibili_ai_zh(self) -> None:
+        self.assertIn("ai-zh", web_app.SUBTITLE_LANGUAGES)
+        self.assertLess(
+            web_app._subtitle_language_rank("ai-zh"),
+            web_app._subtitle_language_rank("zh-Hans"),
+        )
+
+    def test_extract_source_author_prefers_uploader(self) -> None:
+        self.assertEqual(
+            web_app.extract_source_author(
+                {"uploader": "酸老师", "channel": "频道名", "creator": "创作者"}
+            ),
+            "酸老师",
+        )
+
+    def test_collect_subtitle_candidates_falls_back_to_downloaded_ai_subtitles(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            temp_path = Path(temp_dir)
+            nested = temp_path / "Sample [BV-test]"
+            nested.mkdir()
+            (nested / "sample.ai-zh.srt").write_text("1\n00:00:00,000 --> 00:00:01,000\n你好\n", encoding="utf-8")
+            (nested / "sample.danmaku.xml").write_text("<i></i>", encoding="utf-8")
+
+            candidates = web_app._collect_subtitle_candidates({}, temp_dir=temp_path)
+
+        self.assertEqual([candidate["lang"] for candidate in candidates], ["ai-zh"])
+        self.assertEqual(candidates[0]["ext"], "srt")
+        self.assertEqual(candidates[0]["source"], "automatic captions")
+
+    def test_start_rejects_obvious_non_url_input(self) -> None:
+        with web_app.jobs_lock:
+            web_app.jobs.clear()
+
+        with web_app.app.test_client() as client, mock.patch.object(web_app.executor, "submit") as submit:
+            response = client.post(
+                "/api/start",
+                json={
+                    "url": "not-a-url",
+                    "preset": web_app.AUDIO_PRESET_NAME,
+                    "use_cookies": False,
+                    "generate_transcript": False,
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("有效的视频链接", response.get_json()["error"])
+        submit.assert_not_called()
+        with web_app.jobs_lock:
+            self.assertEqual(web_app.jobs, {})
+
+    def test_start_rejects_cloud_metadata_and_loopback_variants(self) -> None:
+        with web_app.jobs_lock:
+            web_app.jobs.clear()
+
+        blocked_urls = (
+            "http://169.254.169.254/latest/meta-data/",
+            "http://127.1/",
+            "http://2130706433/",
+            "http://0x7f000001/",
+            "http://0177.0.0.1/",
+            "http://metadata/computeMetadata/v1/",
+            "http://instance-data.ec2.internal/",
+        )
+        with web_app.app.test_client() as client, mock.patch.object(web_app.executor, "submit") as submit:
+            for blocked_url in blocked_urls:
+                response = client.post(
+                    "/api/start",
+                    json={
+                        "url": blocked_url,
+                        "preset": web_app.AUDIO_PRESET_NAME,
+                        "use_cookies": False,
+                        "generate_transcript": False,
+                    },
+                )
+                self.assertEqual(response.status_code, 400, msg=blocked_url)
+                self.assertIn("云元数据", response.get_json()["error"])
+
+        submit.assert_not_called()
+        with web_app.jobs_lock:
+            self.assertEqual(web_app.jobs, {})
+
+    def test_start_rejects_too_many_urls(self) -> None:
+        with web_app.jobs_lock:
+            web_app.jobs.clear()
+
+        urls = "\n".join(
+            f"https://www.youtube.com/watch?v=abcdefghij{index}"
+            for index in range(3)
+        )
+        with web_app.app.test_client() as client, mock.patch.object(
+            web_app,
+            "MAX_START_URLS",
+            2,
+        ), mock.patch.object(web_app.executor, "submit") as submit:
+            response = client.post(
+                "/api/start",
+                json={
+                    "url": urls,
+                    "preset": web_app.AUDIO_PRESET_NAME,
+                    "use_cookies": False,
+                    "generate_transcript": False,
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("最多提交 2 个链接", response.get_json()["error"])
+        submit.assert_not_called()
+        with web_app.jobs_lock:
+            self.assertEqual(web_app.jobs, {})
+
+    def test_start_accepts_bare_supported_url(self) -> None:
+        with web_app.jobs_lock:
+            web_app.jobs.clear()
+
+        with web_app.app.test_client() as client, mock.patch.object(web_app.executor, "submit", return_value=None):
+            response = client.post(
+                "/api/start",
+                json={
+                    "url": "youtube.com/watch?v=abcdefghijk",
+                    "preset": web_app.AUDIO_PRESET_NAME,
+                    "use_cookies": False,
+                    "generate_transcript": False,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        with web_app.jobs_lock:
+            created_jobs = list(web_app.jobs.values())
+            self.assertEqual(created_jobs[0].url, "https://youtube.com/watch?v=abcdefghijk")
+            web_app.jobs.clear()
+
+    def test_start_rejects_generate_knowledge_without_transcript(self) -> None:
+        with web_app.jobs_lock:
+            web_app.jobs.clear()
+
+        with web_app.app.test_client() as client, mock.patch.object(web_app.executor, "submit") as submit:
+            response = client.post(
+                "/api/start",
+                json={
+                    "url": "https://www.youtube.com/watch?v=abcdefghijk",
+                    "preset": web_app.AUDIO_PRESET_NAME,
+                    "use_cookies": False,
+                    "generate_transcript": False,
+                    "generate_knowledge": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Markdown 逐字稿模式", response.get_json()["error"])
+        submit.assert_not_called()
+        with web_app.jobs_lock:
+            self.assertEqual(web_app.jobs, {})
+
+    def test_start_accepts_generate_knowledge_in_transcript_mode(self) -> None:
+        with web_app.jobs_lock:
+            web_app.jobs.clear()
+
+        with web_app.app.test_client() as client, mock.patch.object(
+            web_app.executor, "submit", return_value=None
+        ), mock.patch.object(web_app, "ENABLE_KNOWLEDGE_DRAFT", True), mock.patch.object(
+            cleanup_backend, "KNOWLEDGE_DRAFT_API_KEY", "sk-knowledge"
+        ):
+            response = client.post(
+                "/api/start",
+                json={
+                    "url": "https://www.youtube.com/watch?v=abcdefghijk",
+                    "preset": web_app.TRANSCRIPT_PRESET_NAME,
+                    "use_cookies": False,
+                    "generate_transcript": True,
+                    "generate_knowledge": True,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        with web_app.jobs_lock:
+            created_jobs = list(web_app.jobs.values())
+            self.assertTrue(created_jobs[0].generate_knowledge)
+            web_app.jobs.clear()
+
+    def test_run_text_pipeline_generates_knowledge_sidecar_when_requested(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact_base_path = Path(temp_dir) / "Sample [demo]" / "Sample [demo]"
+            job = web_app.Job(
+                job_id="job-knowledge",
+                url="https://www.youtube.com/watch?v=abcdefghijk",
+                preset=web_app.TRANSCRIPT_PRESET_NAME,
+                use_cookies=False,
+                generate_transcript=True,
+                generate_knowledge=True,
+            )
+            job.title = "Sample"
+
+            with mock.patch.object(web_app, "AI_CLEANUP_ENABLED", False), mock.patch.object(
+                web_app, "ENABLE_ARTICLE_DRAFT", False
+            ), mock.patch.object(
+                web_app,
+                "generate_knowledge_draft",
+                return_value={
+                    "provider": "knowledge-test",
+                    "model": "knowledge-model",
+                    "text": "# 知识库稿",
+                    "raw_response": {"id": "knowledge-response"},
+                },
+            ):
+                web_app.run_text_pipeline(
+                    job,
+                    artifact_base_path=artifact_base_path,
+                    raw_text="原始逐字稿",
+                    transcript_provider="yt-dlp subtitles",
+                    transcript_model="manual subtitles · zh · vtt",
+                    transcript_response={"subtitle_language": "zh"},
+                    extra_meta={"transcript_route": "direct_subtitles"},
+                )
+
+            artifact_paths = web_app.build_artifact_paths(artifact_base_path)
+            metadata = json.loads(artifact_paths["meta_path"].read_text(encoding="utf-8"))
+
+            self.assertTrue(artifact_paths["knowledge_path"].exists())
+            self.assertEqual(
+                artifact_paths["knowledge_path"].read_text(encoding="utf-8").strip(),
+                "# 知识库稿",
+            )
+            self.assertEqual(metadata["knowledge_model"], "knowledge-model")
+            self.assertEqual(job.knowledge_path, str(artifact_paths["knowledge_path"]))
+            self.assertIsNone(job.knowledge_error)
 
     def test_resolve_cookie_options_prefers_youtube_specific_browser_auth(self) -> None:
         with mock.patch.object(web_app, "YOUTUBE_COOKIES_FROM_BROWSER", "chrome"), mock.patch.object(
@@ -164,6 +475,31 @@ class SubtitleParsingTests(unittest.TestCase):
 
         self.assertEqual(text, "Hello world\nSecond line")
 
+    def test_transcribe_audio_rejects_truncated_openrouter_response(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "sample.mp3"
+            audio_path.write_text("audio", encoding="utf-8")
+
+            with mock.patch.object(
+                openrouter_backend,
+                "_post_chat",
+                return_value={
+                    "choices": [
+                        {
+                            "finish_reason": "length",
+                            "message": {"content": "partial transcript"},
+                        }
+                    ]
+                },
+            ):
+                with self.assertRaisesRegex(RuntimeError, "truncated before completion"):
+                    openrouter_backend.transcribe_audio(
+                        audio_path,
+                        title="Sample",
+                        source_url="https://example.com/video",
+                        language_hint="zh",
+                    )
+
     def test_prepare_audio_for_transcription_uses_temp_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             audio_path = Path(temp_dir) / "sample.mp3"
@@ -179,6 +515,97 @@ class SubtitleParsingTests(unittest.TestCase):
         self.assertNotEqual(prepared_path.parent, audio_path.parent)
         self.assertTrue(prepared_path.name.endswith(".transcribe.mp3"))
         prepared_path.unlink(missing_ok=True)
+
+    def test_split_audio_for_transcription_creates_chunk_files(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "sample.transcribe.mp3"
+            audio_path.write_text("audio", encoding="utf-8")
+
+            def fake_run(command, check, capture_output, text):
+                pattern = Path(command[-1])
+                pattern.parent.mkdir(parents=True, exist_ok=True)
+                (pattern.parent / "chunk-000.mp3").write_text("chunk-1", encoding="utf-8")
+                (pattern.parent / "chunk-001.mp3").write_text("chunk-2", encoding="utf-8")
+                return mock.Mock()
+
+            with mock.patch.object(web_app.subprocess, "run", side_effect=fake_run):
+                chunk_paths = web_app.split_audio_for_transcription(audio_path)
+
+        self.assertEqual(len(chunk_paths), 2)
+        self.assertTrue(chunk_paths[0].name.endswith("chunk-000.mp3"))
+        web_app.cleanup_transcription_chunks(chunk_paths)
+
+    def test_merge_transcript_chunks_dedupes_boundary_line(self) -> None:
+        merged = web_app.merge_transcript_chunks(
+            [
+                "第一段\n重复边界",
+                "重复边界\n第二段",
+            ]
+        )
+
+        self.assertEqual(merged, "第一段\n重复边界\n\n第二段")
+
+    def test_run_transcription_pipeline_retries_with_chunked_transcription_after_truncation(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            audio_path = Path(temp_dir) / "sample.mp3"
+            prepared_audio = Path(temp_dir) / "sample.transcribe.mp3"
+            chunk_one = Path(temp_dir) / "chunk-000.mp3"
+            chunk_two = Path(temp_dir) / "chunk-001.mp3"
+            for path in (audio_path, prepared_audio, chunk_one, chunk_two):
+                path.write_text("audio", encoding="utf-8")
+
+            job = web_app.Job(
+                job_id="job-chunked-transcription",
+                url="https://example.com/video",
+                preset=web_app.TRANSCRIPT_PRESET_NAME,
+                use_cookies=False,
+                generate_transcript=True,
+            )
+            job.title = "Sample"
+
+            truncated_error = RuntimeError(
+                "OpenRouter transcription response was truncated before completion. Try a shorter clip."
+            )
+
+            with mock.patch.object(web_app, "prepare_audio_for_transcription", return_value=prepared_audio), mock.patch.object(
+                web_app, "should_chunk_audio_for_transcription", return_value=False
+            ), mock.patch.object(
+                web_app,
+                "split_audio_for_transcription",
+                return_value=[chunk_one, chunk_two],
+            ), mock.patch.object(
+                web_app,
+                "transcribe_audio",
+                side_effect=[
+                    truncated_error,
+                    {
+                        "provider": "openrouter",
+                        "model": "openai/gpt-audio-mini",
+                        "text": "第一段",
+                        "raw_response": {"id": "chunk-1"},
+                    },
+                    {
+                        "provider": "openrouter",
+                        "model": "openai/gpt-audio-mini",
+                        "text": "第二段",
+                        "raw_response": {"id": "chunk-2"},
+                    },
+                ],
+            ) as transcribe_audio, mock.patch.object(
+                web_app, "run_text_pipeline"
+            ) as run_text_pipeline, mock.patch.object(
+                web_app, "cleanup_transcription_chunks"
+            ) as cleanup_chunks:
+                web_app.run_transcription_pipeline(job, audio_path)
+
+        self.assertEqual(transcribe_audio.call_count, 3)
+        run_text_pipeline.assert_called_once()
+        kwargs = run_text_pipeline.call_args.kwargs
+        self.assertEqual(kwargs["raw_text"], "第一段\n\n第二段")
+        self.assertEqual(kwargs["extra_meta"]["transcript_route"], "audio_transcription_chunked")
+        self.assertTrue(kwargs["extra_meta"]["transcription_chunked"])
+        self.assertEqual(kwargs["extra_meta"]["transcription_chunk_count"], 2)
+        cleanup_chunks.assert_called_once()
 
     def test_build_artifact_base_path_truncates_long_titles(self) -> None:
         long_title = (
@@ -326,6 +753,25 @@ class TranscriptRoutingTests(unittest.TestCase):
             resolved = web_cli._artifact_paths_from_target(base_path.parent)
 
         self.assertEqual(resolved["markdown_path"].resolve(), artifact_paths["markdown_path"].resolve())
+
+    def test_artifacts_paths_output_prefers_existing_markdown_over_missing_knowledge(self) -> None:
+        runner = CliRunner()
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            base_path = Path(temp_dir) / "Sample [abc]" / "Sample [abc].mp3"
+            base_path.parent.mkdir(parents=True)
+            base_path.write_text("audio", encoding="utf-8")
+            artifact_paths = web_app.build_artifact_paths(base_path)
+            artifact_paths["markdown_path"].write_text("# Sample\n", encoding="utf-8")
+
+            result = runner.invoke(
+                web_cli.main,
+                ["artifacts", str(artifact_paths["markdown_path"]), "--output", "paths"],
+            )
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertEqual(result.output.strip(), str(artifact_paths["markdown_path"].resolve()))
+        self.assertFalse(artifact_paths["knowledge_path"].exists())
 
     def test_run_knowledge_jobs_writes_knowledge_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -541,6 +987,33 @@ class TranscriptRoutingTests(unittest.TestCase):
             artifact_paths["markdown_path"].resolve(),
         )
 
+    def test_capture_command_records_output_dir_override_in_json_result(self) -> None:
+        runner = CliRunner()
+
+        def fake_run_job(job: web_app.Job) -> web_app.Job:
+            job.done = True
+            job.status = "Failed"
+            job.error = "mock failure"
+            return job
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with mock.patch.object(web_cli.web_app, "run_job", side_effect=fake_run_job):
+                result = runner.invoke(
+                    web_cli.main,
+                    [
+                        "capture",
+                        "https://example.com/video",
+                        "--output-dir",
+                        temp_dir,
+                        "--json",
+                        "--no-resume",
+                    ],
+                )
+
+        self.assertNotEqual(result.exit_code, 0)
+        payload = json.loads(result.output)
+        self.assertEqual(payload["results"][0]["output_dir"], str(Path(temp_dir).resolve()))
+
     def test_capture_command_resumes_knowledge_from_checkpoint_without_redownload(self) -> None:
         runner = CliRunner()
 
@@ -643,6 +1116,20 @@ class TranscriptRoutingTests(unittest.TestCase):
         self.assertIn("knowledge_enabled", payload)
         self.assertIn("knowledge_capture_ready", payload)
         self.assertIn("douyin_auth_configured", payload)
+        self.assertIn("youtube_auth_verified", payload)
+        self.assertIn("runtime_environment", payload)
+
+    def test_doctor_command_default_output_is_human_readable(self) -> None:
+        runner = CliRunner()
+
+        result = runner.invoke(web_cli.main, ["doctor"])
+
+        self.assertEqual(result.exit_code, 0, msg=result.output)
+        self.assertIn("Muku doctor", result.output)
+        self.assertIn("Readiness", result.output)
+        self.assertIn("Dependencies", result.output)
+        self.assertIn("verified:", result.output)
+        self.assertIn("Next steps", result.output)
 
     def test_config_command_persists_runtime_settings(self) -> None:
         runner = CliRunner()
@@ -766,6 +1253,146 @@ class TranscriptRoutingTests(unittest.TestCase):
         self.assertEqual(payload["download_dir"], str(download_dir.resolve()))
         self.assertEqual(payload["ai_cleanup_prompt_source"], "inline")
         self.assertEqual(saved["knowledge_draft_prompt_text"], "知识库提示词")
+
+    def test_settings_api_masks_secrets_and_preserves_omitted_secret_fields(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "config"
+
+            with mock.patch.dict(
+                web_app.os.environ,
+                {"VIDEO_DOWNLOADE_CONFIG_DIR": str(config_dir)},
+                clear=False,
+            ):
+                with web_app.app.test_client() as client:
+                    create_response = client.post(
+                        "/api/settings",
+                        json={
+                            "openrouter_api_key": "sk-test-secret-value",
+                            "openrouter_transcription_model": "openai/mock-transcribe",
+                            "enable_ai_cleanup": False,
+                            "enable_article_draft": False,
+                            "enable_knowledge_draft": False,
+                        },
+                    )
+                    masked_response = client.get("/api/settings")
+                    frontend_settings = web_app.frontend_config()["settings"]
+                    update_response = client.post(
+                        "/api/settings",
+                        json={
+                            "openrouter_transcription_model": "openai/changed-transcribe",
+                            "enable_ai_cleanup": False,
+                            "enable_article_draft": False,
+                            "enable_knowledge_draft": False,
+                        },
+                    )
+                    saved_after_update = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))
+                    clear_response = client.post(
+                        "/api/settings",
+                        json={
+                            "openrouter_api_key": "",
+                            "enable_ai_cleanup": False,
+                            "enable_article_draft": False,
+                            "enable_knowledge_draft": False,
+                        },
+                    )
+
+                saved_after_clear = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))
+                web_app.apply_runtime_settings({})
+
+        self.assertEqual(create_response.status_code, 200)
+        self.assertEqual(masked_response.status_code, 200)
+        self.assertEqual(update_response.status_code, 200)
+        self.assertEqual(clear_response.status_code, 200)
+        self.assertNotEqual(create_response.get_json()["openrouter_api_key"], "sk-test-secret-value")
+        self.assertNotEqual(masked_response.get_json()["openrouter_api_key"], "sk-test-secret-value")
+        self.assertNotEqual(frontend_settings["openrouter_api_key"], "sk-test-secret-value")
+        self.assertTrue(masked_response.get_json()["openrouter_api_key_configured"])
+        self.assertEqual(saved_after_update["openrouter_api_key"], "sk-test-secret-value")
+        self.assertEqual(saved_after_clear["openrouter_api_key"], "")
+
+    def test_settings_api_exposes_platform_auth_verification_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cookies_path = Path(temp_dir) / "youtube.cookies.txt"
+            cookies_path.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+
+            with mock.patch.object(web_app, "YOUTUBE_COOKIES_PATH", str(cookies_path)), mock.patch.object(
+                web_app, "YOUTUBE_COOKIES_FROM_BROWSER", ""
+            ), mock.patch.object(web_app, "COOKIES_PATH", ""), mock.patch.object(
+                web_app, "COOKIES_FROM_BROWSER", ""
+            ):
+                with web_app.app.test_client() as client:
+                    response = client.get("/api/settings")
+
+                payload = response.get_json()
+                frontend_payload = web_app.frontend_config()
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(payload["youtube_auth_configured"])
+        self.assertTrue(payload["youtube_auth_verified"])
+        self.assertEqual(payload["platform_auth"]["youtube"]["status"], "verified")
+        self.assertTrue(frontend_payload["platformAuth"]["youtube"]["verified"])
+
+    def test_api_requires_web_token_when_configured(self) -> None:
+        with web_app.app.test_client() as client, mock.patch.object(web_app, "WEB_TOKEN", "secret-token"):
+            missing_response = client.get("/api/tasks")
+            wrong_response = client.get("/api/tasks", headers={web_app.WEB_TOKEN_HEADER: "wrong"})
+            query_response = client.get("/api/tasks?token=secret-token")
+            valid_response = client.get("/api/tasks", headers={web_app.WEB_TOKEN_HEADER: "secret-token"})
+
+        self.assertEqual(missing_response.status_code, 401)
+        self.assertEqual(wrong_response.status_code, 401)
+        self.assertEqual(query_response.status_code, 401)
+        self.assertEqual(valid_response.status_code, 200)
+
+    def test_settings_base_url_change_requires_secret_refresh(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "config"
+
+            with mock.patch.dict(
+                web_app.os.environ,
+                {"VIDEO_DOWNLOADE_CONFIG_DIR": str(config_dir)},
+                clear=False,
+            ):
+                with web_app.app.test_client() as client:
+                    create_response = client.post(
+                        "/api/settings",
+                        json={
+                            "openrouter_base_url": "https://openrouter.ai/api/v1",
+                            "openrouter_api_key": "sk-test-secret-value",
+                            "enable_ai_cleanup": False,
+                            "enable_article_draft": False,
+                            "enable_knowledge_draft": False,
+                        },
+                    )
+                    blocked_response = client.post(
+                        "/api/settings",
+                        json={
+                            "openrouter_base_url": "https://attacker.example/v1",
+                            "enable_ai_cleanup": False,
+                            "enable_article_draft": False,
+                            "enable_knowledge_draft": False,
+                        },
+                    )
+                    cleared_response = client.post(
+                        "/api/settings",
+                        json={
+                            "openrouter_base_url": "https://attacker.example/v1",
+                            "openrouter_api_key": "",
+                            "enable_ai_cleanup": False,
+                            "enable_article_draft": False,
+                            "enable_knowledge_draft": False,
+                        },
+                    )
+
+                saved_after_clear = json.loads((config_dir / "settings.json").read_text(encoding="utf-8"))
+                web_app.apply_runtime_settings({})
+
+        self.assertEqual(create_response.status_code, 200)
+        self.assertEqual(blocked_response.status_code, 400)
+        self.assertIn("重新输入对应 API Key", blocked_response.get_json()["error"])
+        self.assertEqual(cleared_response.status_code, 200)
+        self.assertEqual(saved_after_clear["openrouter_base_url"], "https://attacker.example/v1")
+        self.assertEqual(saved_after_clear["openrouter_api_key"], "")
 
     def test_download_media_uses_download_info_when_preview_fails(self) -> None:
         job = web_app.Job(
@@ -917,6 +1544,31 @@ class TranscriptRoutingTests(unittest.TestCase):
         _, kwargs = run_transcription_pipeline.call_args
         self.assertEqual(kwargs["extra_meta"]["transcript_route"], "douyin_audio_transcription")
 
+    def test_run_job_clears_non_fatal_backend_warning_on_success(self) -> None:
+        job = web_app.Job(
+            job_id="job-success-warning",
+            url="https://www.youtube.com/watch?v=abcdefghijk",
+            preset=web_app.TRANSCRIPT_PRESET_NAME,
+            use_cookies=False,
+            generate_transcript=True,
+        )
+        job.backend_error = "WARNING: impersonation target unavailable"
+
+        def fake_run_transcript_job(active_job: web_app.Job) -> None:
+            active_job.transcript_path = "/tmp/Sample - 逐字稿.md"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with mock.patch.object(web_app, "DOWNLOAD_DIR", temp_dir), mock.patch.object(
+                web_app,
+                "run_transcript_job",
+                side_effect=fake_run_transcript_job,
+            ):
+                web_app.run_job(job)
+
+        self.assertTrue(job.done)
+        self.assertEqual(job.status, "Done · transcript ready")
+        self.assertIsNone(job.backend_error)
+
     def test_tasks_endpoint_includes_source_url_and_backend_error(self) -> None:
         job = web_app.Job(
             job_id="job-task-fields",
@@ -929,6 +1581,10 @@ class TranscriptRoutingTests(unittest.TestCase):
         job.done = True
         job.error = "friendly error"
         job.backend_error = "raw backend error"
+        job.raw_path = "/tmp/sample - 原始逐字稿.txt"
+        job.article_path = "/tmp/sample - 解析稿.md"
+        job.transcript_path = "/tmp/sample - 逐字稿.md"
+        job.metadata_path = "/tmp/sample - 转写信息.json"
 
         with web_app.jobs_lock:
             web_app.jobs.clear()
@@ -945,6 +1601,83 @@ class TranscriptRoutingTests(unittest.TestCase):
         payload = response.get_json()
         self.assertEqual(payload["tasks"][0]["source_url"], job.url)
         self.assertEqual(payload["tasks"][0]["backend_error"], job.backend_error)
+        self.assertEqual(payload["tasks"][0]["raw_path"], job.raw_path)
+        self.assertEqual(payload["tasks"][0]["article_path"], job.article_path)
+        self.assertEqual(payload["tasks"][0]["metadata_path"], job.metadata_path)
+
+    def test_task_artifact_preview_endpoint_returns_transcript_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact_dir = Path(temp_dir)
+            transcript_path = artifact_dir / "Sample - 逐字稿.md"
+            article_path = artifact_dir / "Sample - 解析稿.md"
+            metadata_path = artifact_dir / "Sample - 转写信息.json"
+            transcript_path.write_text("# Sample\n\nTranscript body\n", encoding="utf-8")
+            article_path.write_text("# 解析稿\n\nArticle body\n", encoding="utf-8")
+            metadata_path.write_text('{"source_url":"https://example.com/video"}\n', encoding="utf-8")
+
+            job = web_app.Job(
+                job_id="job-preview",
+                url="https://example.com/video",
+                preset=web_app.TRANSCRIPT_PRESET_NAME,
+                use_cookies=False,
+                generate_transcript=True,
+            )
+            job.artifact_dir = str(artifact_dir)
+            job.transcript_path = str(transcript_path)
+            job.article_path = str(article_path)
+            job.metadata_path = str(metadata_path)
+
+            with web_app.jobs_lock:
+                web_app.jobs.clear()
+                web_app.jobs[job.job_id] = job
+
+            try:
+                with web_app.app.test_client() as client:
+                    response = client.get(f"/api/tasks/{job.job_id}/artifacts/transcript")
+            finally:
+                with web_app.jobs_lock:
+                    web_app.jobs.clear()
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["artifact_kind"], "transcript")
+        self.assertEqual(payload["label"], "逐字稿")
+        self.assertIn("Transcript body", payload["content"])
+        self.assertFalse(payload["truncated"])
+
+    def test_task_artifact_preview_endpoint_can_infer_metadata_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact_dir = Path(temp_dir)
+            transcript_path = artifact_dir / "Sample - 逐字稿.md"
+            metadata_path = artifact_dir / "Sample - 转写信息.json"
+            transcript_path.write_text("# Sample\n", encoding="utf-8")
+            metadata_path.write_text('{"provider":"yt-dlp"}\n', encoding="utf-8")
+
+            job = web_app.Job(
+                job_id="job-preview-infer",
+                url="https://example.com/video",
+                preset=web_app.TRANSCRIPT_PRESET_NAME,
+                use_cookies=False,
+                generate_transcript=True,
+            )
+            job.artifact_dir = str(artifact_dir)
+            job.transcript_path = str(transcript_path)
+
+            with web_app.jobs_lock:
+                web_app.jobs.clear()
+                web_app.jobs[job.job_id] = job
+
+            try:
+                with web_app.app.test_client() as client:
+                    response = client.get(f"/api/tasks/{job.job_id}/artifacts/metadata")
+            finally:
+                with web_app.jobs_lock:
+                    web_app.jobs.clear()
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["artifact_kind"], "metadata")
+        self.assertIn('"provider":"yt-dlp"', payload["content"])
 
 
 if __name__ == "__main__":

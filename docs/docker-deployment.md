@@ -7,7 +7,7 @@
 - 默认用 `docker compose up -d --build` 就能起服务
 - 下载产物和网页端保存的配置都会持久化
 - Windows / macOS 默认都能直接用仓库内的 `./docker-data` 目录
-- 网页端可以改默认下载目录、转写模型、解析模型、知识库模型和提示词
+- 网页端可以改默认下载目录、转写模型、解析模型，以及供 Web 可选知识库稿 / CLI / 后续整理复用的知识库模型和提示词
 - 容器里仍然可以直接使用 `video-downloade` CLI
 
 ## 默认目录约定
@@ -42,6 +42,7 @@ cp .env.example .env
 - `OPENROUTER_API_KEY`
 - `AI_CLEANUP_API_KEY`
 - `ARTICLE_DRAFT_API_KEY`
+- 如果你准备直接跑 CLI `--knowledge`，再补 `KNOWLEDGE_DRAFT_API_KEY`
 
 如果你还要抓受限内容，再补平台 Cookies：
 
@@ -64,7 +65,7 @@ http://localhost:8080
 ### 4. 先做两步初始化
 
 1. 打开网页里的“服务配置”
-2. 填好默认下载目录、转写服务、清洗/解析/知识库模型与提示词
+2. 填好默认下载目录、转写服务、清洗/解析模型与提示词；知识库整理配置可供网页显式生成知识库稿、CLI `--knowledge` 和后续整理链路复用
 
 推荐第一次至少保存这些：
 
@@ -72,7 +73,7 @@ http://localhost:8080
 - 转写 Base URL / API Key / 模型
 - 清洗稿 Base URL / API Key / 模型
 - 解析稿 Base URL / API Key / 模型
-- 如果你要直接出知识库，再补知识库 Base URL / API Key / 模型
+- 如果你要直接跑容器内 CLI 的知识库链路，再补知识库 Base URL / API Key / 模型
 
 ### 5. 做一次自检
 
@@ -80,6 +81,8 @@ http://localhost:8080
 docker compose exec ytdl-webui video-downloade doctor --json
 docker compose exec ytdl-webui video-downloade config --json
 ```
+
+注意：`doctor` 现在会同时显示 `configured` 和 `verified`。在 Docker 里，如果浏览器登录态只显示 `CONFIGURED_ONLY`，表示它知道你配了这项，但不会把它误判成“容器内已验证可用”。
 
 ## Windows / macOS 怎么选真实下载目录
 
@@ -126,7 +129,7 @@ docker compose up -d --build
 
 ## Cookies 挂载方式
 
-如果你要在 Docker 里给 YouTube / Bilibili / Douyin 提供登录态，推荐把 cookies 文件统一放到仓库里的 `./cookies/`，然后在 Compose 里保留这个挂载：
+如果你要在 Docker 里给 YouTube / Bilibili / Douyin 提供登录态，推荐把平台专用 `cookies.txt` 统一放到仓库里的 `./cookies/`，然后在 Compose 里保留这个挂载：
 
 ```yaml
 volumes:
@@ -141,9 +144,13 @@ DOCKER_BILIBILI_COOKIES_PATH=/cookies/bilibili.cookies.txt
 DOCKER_DOUYIN_COOKIES_PATH=/cookies/douyin.cookies.txt
 ```
 
+这比在容器里直接依赖 `*_COOKIES_FROM_BROWSER` 更稳。后者更适合作为本地 Python 运行时的方案，而不是 Docker 默认路径。
+
 ## 容器内 CLI
 
 网页端适合人工使用；如果你要批量跑创作者系列、给 AI agent 用，建议直接调容器里的 CLI。
+
+补一句：当前网页任务默认生成逐字稿和解析稿；如果你要直接出 `知识库.md`，可以在网页里显式勾选知识库稿，或在容器内 CLI 里显式传 `--knowledge`。
 
 ### 查看当前配置
 

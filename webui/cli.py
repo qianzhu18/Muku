@@ -36,6 +36,229 @@ def _normalize_output_mode(output: str, as_json: bool) -> str:
     return "json" if as_json else output
 
 
+def _status_label(value: bool) -> str:
+    return "OK" if value else "MISSING"
+
+
+def _enabled_label(value: bool) -> str:
+    return "enabled" if value else "disabled"
+
+
+def _verification_label(*, configured: bool, verified: bool) -> str:
+    if verified:
+        return "VERIFIED"
+    if configured:
+        return "CONFIGURED_ONLY"
+    return "MISSING"
+
+
+DOCTOR_AUTH_FIELDS = (
+    ("YouTube", "youtube_auth", "DOCKER_YOUTUBE_COOKIES_PATH"),
+    ("Bilibili", "bilibili_auth", "DOCKER_BILIBILI_COOKIES_PATH"),
+    ("Douyin", "douyin_auth", "DOCKER_DOUYIN_COOKIES_PATH"),
+)
+
+
+def _doctor_report() -> dict[str, object]:
+    subtitle_auth = web_app.platform_auth_state("Unknown")
+    youtube_auth = web_app.platform_auth_state("YouTube")
+    bilibili_auth = web_app.platform_auth_state("Bilibili")
+    douyin_auth = web_app.platform_auth_state("Douyin")
+    settings = web_app.current_runtime_settings()
+    return {
+        "settings_path": settings["settings_path"],
+        "settings_dir": settings["settings_dir"],
+        "runtime_environment": settings["runtime_environment"],
+        "download_dir": web_app.DOWNLOAD_DIR,
+        "download_root_dir": settings["download_root_dir"],
+        "download_root_locked": settings["download_root_locked"],
+        "ffmpeg_bin": web_app.FFMPEG_BIN,
+        "ffmpeg_found": shutil.which(web_app.FFMPEG_BIN) is not None,
+        "yt_dlp_found": shutil.which("yt-dlp") is not None,
+        "transcript_route_strategy": "subtitle_first_then_audio_fallback",
+        "subtitle_auth": subtitle_auth,
+        "subtitle_auth_configured": bool(subtitle_auth["configured"]),
+        "subtitle_auth_verified": bool(subtitle_auth["verified"]),
+        "youtube_auth": youtube_auth,
+        "youtube_auth_configured": bool(youtube_auth["configured"]),
+        "youtube_auth_verified": bool(youtube_auth["verified"]),
+        "bilibili_auth": bilibili_auth,
+        "bilibili_auth_configured": bool(bilibili_auth["configured"]),
+        "bilibili_auth_verified": bool(bilibili_auth["verified"]),
+        "douyin_auth": douyin_auth,
+        "douyin_auth_configured": bool(douyin_auth["configured"]),
+        "douyin_auth_verified": bool(douyin_auth["verified"]),
+        "ytdlp_remote_components": list(web_app.YTDLP_REMOTE_COMPONENTS),
+        "transcription_enabled": web_app.ENABLE_TRANSCRIPTION,
+        "openrouter_base_url": web_app.OPENROUTER_BASE_URL,
+        "transcription_model": web_app.OPENROUTER_TRANSCRIPTION_MODEL,
+        "openrouter_key_configured": bool(web_app.transcribe_audio.__globals__.get("OPENROUTER_API_KEY")),
+        "cleanup_enabled": web_app.AI_CLEANUP_ENABLED,
+        "cleanup_base_url": web_app.AI_CLEANUP_BASE_URL,
+        "cleanup_model": web_app.AI_CLEANUP_MODEL,
+        "cleanup_key_configured": bool(web_app.cleanup_transcript.__globals__.get("AI_CLEANUP_API_KEY")),
+        "cleanup_prompt_file": web_app.AI_CLEANUP_PROMPT_FILE,
+        "cleanup_prompt_source": settings["ai_cleanup_prompt_source"],
+        "cleanup_prompt_exists": Path(web_app.AI_CLEANUP_PROMPT_FILE).exists(),
+        "article_enabled": web_app.ENABLE_ARTICLE_DRAFT,
+        "article_base_url": web_app.ARTICLE_DRAFT_BASE_URL,
+        "article_model": web_app.ARTICLE_DRAFT_MODEL,
+        "article_key_configured": bool(
+            web_app.generate_ai_article_draft.__globals__.get("ARTICLE_DRAFT_API_KEY")
+        ),
+        "article_prompt_file": web_app.ARTICLE_DRAFT_PROMPT_FILE,
+        "article_prompt_source": settings["article_draft_prompt_source"],
+        "article_prompt_exists": Path(web_app.ARTICLE_DRAFT_PROMPT_FILE).exists(),
+        "knowledge_enabled": cleanup_backend.ENABLE_KNOWLEDGE_DRAFT,
+        "knowledge_base_url": cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL,
+        "knowledge_model": cleanup_backend.KNOWLEDGE_DRAFT_MODEL,
+        "knowledge_key_configured": bool(cleanup_backend.KNOWLEDGE_DRAFT_API_KEY),
+        "knowledge_prompt_file": cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE,
+        "knowledge_prompt_source": settings["knowledge_draft_prompt_source"],
+        "knowledge_prompt_exists": Path(cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE).exists(),
+        "cookies_path": web_app.COOKIES_PATH or None,
+        "cookies_exists": bool(web_app.COOKIES_PATH) and Path(web_app.COOKIES_PATH).exists(),
+        "cookies_from_browser": web_app.COOKIES_FROM_BROWSER or None,
+        "youtube_cookies_path": web_app.YOUTUBE_COOKIES_PATH or None,
+        "youtube_cookies_exists": bool(web_app.YOUTUBE_COOKIES_PATH) and Path(web_app.YOUTUBE_COOKIES_PATH).exists(),
+        "youtube_cookies_from_browser": web_app.YOUTUBE_COOKIES_FROM_BROWSER or None,
+        "bilibili_cookies_path": web_app.BILIBILI_COOKIES_PATH or None,
+        "bilibili_cookies_exists": bool(web_app.BILIBILI_COOKIES_PATH) and Path(web_app.BILIBILI_COOKIES_PATH).exists(),
+        "bilibili_cookies_from_browser": web_app.BILIBILI_COOKIES_FROM_BROWSER or None,
+        "douyin_cookies_path": web_app.DOUYIN_COOKIES_PATH or None,
+        "douyin_cookies_exists": bool(web_app.DOUYIN_COOKIES_PATH) and Path(web_app.DOUYIN_COOKIES_PATH).exists(),
+        "douyin_cookies_from_browser": web_app.DOUYIN_COOKIES_FROM_BROWSER or None,
+        "transcript_capture_ready": (
+            shutil.which("yt-dlp") is not None
+            and web_app.ENABLE_TRANSCRIPTION
+            and bool(web_app.transcribe_audio.__globals__.get("OPENROUTER_API_KEY"))
+        ),
+        "knowledge_capture_ready": (
+            shutil.which("yt-dlp") is not None
+            and web_app.ENABLE_TRANSCRIPTION
+            and bool(web_app.transcribe_audio.__globals__.get("OPENROUTER_API_KEY"))
+            and cleanup_backend.ENABLE_KNOWLEDGE_DRAFT
+            and bool(cleanup_backend.KNOWLEDGE_DRAFT_API_KEY)
+        ),
+    }
+
+
+def _doctor_next_steps(report: dict[str, object]) -> list[str]:
+    steps: list[str] = []
+
+    if not report["ffmpeg_found"]:
+        steps.append(f"Install ffmpeg or point FFMPEG_BIN to the executable. Current value: {report['ffmpeg_bin']}")
+    if not report["yt_dlp_found"]:
+        steps.append("Install yt-dlp and make sure it is available on PATH.")
+    if report["transcription_enabled"] and not report["openrouter_key_configured"]:
+        steps.append("Configure OPENROUTER_API_KEY, then run `video-downloade doctor --json` again.")
+    if report["cleanup_enabled"] and not report["cleanup_key_configured"]:
+        steps.append("Configure AI_CLEANUP_API_KEY or disable cleanup for first-run verification.")
+    if report["article_enabled"] and not report["article_key_configured"]:
+        steps.append("Configure ARTICLE_DRAFT_API_KEY or disable article draft for first-run verification.")
+    if report["knowledge_enabled"] and not report["knowledge_key_configured"]:
+        steps.append("Configure KNOWLEDGE_DRAFT_API_KEY or disable knowledge draft for first-run verification.")
+    if not bool(report["subtitle_auth_configured"]):
+        if report["runtime_environment"] == "container":
+            steps.append(
+                "Platform cookies are not configured yet. In Docker, prefer mounting platform cookies.txt files and setting DOCKER_*_COOKIES_PATH before rerunning `video-downloade doctor --json`."
+            )
+        else:
+            steps.append(
+                "Platform cookies are not configured yet. Local Python can use *_COOKIES_FROM_BROWSER=chrome or platform-specific cookies.txt."
+            )
+    else:
+        for platform, field_name, docker_env_key in DOCTOR_AUTH_FIELDS:
+            state = report[field_name]
+            if not isinstance(state, dict) or not bool(state.get("configured")) or bool(state.get("verified")):
+                continue
+            if state.get("status") == "missing_file":
+                steps.append(
+                    f"{platform} auth points to a missing cookies.txt: {state.get('source_path')}. Update {state.get('source_config_key')} and rerun `video-downloade doctor --json`."
+                )
+                continue
+            if state.get("status") == "invalid":
+                steps.append(
+                    f"{platform} browser-cookie setting is invalid: {state.get('source_display')}. Expected forms like `chrome` or `chrome:Profile 1`."
+                )
+                continue
+            if report["runtime_environment"] == "container":
+                steps.append(
+                    f"{platform} auth is configured through browser cookies, but Docker cannot preflight-verify that source. Prefer mounting `/cookies/{platform.lower()}.cookies.txt` and setting `{docker_env_key}`."
+                )
+            else:
+                steps.append(
+                    f"{platform} auth is configured through browser cookies. Doctor marks this as configured-only; run one real URL or export cookies.txt if you need stronger verification."
+                )
+    if not steps:
+        steps.append("Core checks look good. Next try `video-downloade capture URL --json` or open the Web UI with `video-downloade serve`.")
+    return steps
+
+
+def _format_doctor_report(report: dict[str, object]) -> str:
+    platform_auth_configured = ", ".join(
+        f"{platform}={_status_label(bool(report[field_name]['configured']))}"
+        for platform, field_name, _docker_env_key in DOCTOR_AUTH_FIELDS
+    )
+    platform_auth_verified = ", ".join(
+        f"{platform}={_verification_label(configured=bool(report[field_name]['configured']), verified=bool(report[field_name]['verified']))}"
+        for platform, field_name, _docker_env_key in DOCTOR_AUTH_FIELDS
+    )
+    platform_auth_sources = ", ".join(
+        f"{platform}={report[field_name].get('source_display', 'not configured')}"
+        for platform, field_name, _docker_env_key in DOCTOR_AUTH_FIELDS
+    )
+    lines = [
+        "Muku doctor",
+        "",
+        "Readiness",
+        f"- transcript capture: {_status_label(bool(report['transcript_capture_ready']))}",
+        f"- knowledge capture: {_status_label(bool(report['knowledge_capture_ready']))}",
+        "",
+        "Runtime",
+        f"- settings path: {report['settings_path']}",
+        f"- runtime environment: {report['runtime_environment']}",
+        f"- download dir: {report['download_dir']}",
+        f"- download root: {report['download_root_dir'] or 'unlocked'}",
+        f"- route strategy: {report['transcript_route_strategy']}",
+        "",
+        "Dependencies",
+        f"- ffmpeg: {_status_label(bool(report['ffmpeg_found']))} ({report['ffmpeg_bin']})",
+        f"- yt-dlp: {_status_label(bool(report['yt_dlp_found']))}",
+        "",
+        "AI services",
+        (
+            f"- transcription: {_enabled_label(bool(report['transcription_enabled']))}, "
+            f"key={_status_label(bool(report['openrouter_key_configured']))}, "
+            f"model={report['transcription_model']}"
+        ),
+        (
+            f"- cleanup: {_enabled_label(bool(report['cleanup_enabled']))}, "
+            f"key={_status_label(bool(report['cleanup_key_configured']))}, "
+            f"prompt={_status_label(bool(report['cleanup_prompt_exists']))}"
+        ),
+        (
+            f"- article: {_enabled_label(bool(report['article_enabled']))}, "
+            f"key={_status_label(bool(report['article_key_configured']))}, "
+            f"prompt={_status_label(bool(report['article_prompt_exists']))}"
+        ),
+        (
+            f"- knowledge: {_enabled_label(bool(report['knowledge_enabled']))}, "
+            f"key={_status_label(bool(report['knowledge_key_configured']))}, "
+            f"prompt={_status_label(bool(report['knowledge_prompt_exists']))}"
+        ),
+        "",
+        "Platform auth",
+        f"- configured: {platform_auth_configured}",
+        f"- verified: {platform_auth_verified}",
+        f"- source: {platform_auth_sources}",
+        "",
+        "Next steps",
+    ]
+    lines.extend(f"- {step}" for step in _doctor_next_steps(report))
+    return "\n".join(lines)
+
+
 def _collect_line_inputs(
     *,
     values: tuple[str, ...],
@@ -470,13 +693,7 @@ def _emit_results(results: list[dict], output_mode: str) -> None:
 
     if output_mode == "paths":
         for result in results:
-            primary_path = (
-                result.get("knowledge_path")
-                or result.get("transcript_path")
-                or result.get("markdown_path")
-                or result.get("download_path")
-                or result.get("artifact_dir")
-            )
+            primary_path = _primary_result_path(result)
             if primary_path:
                 click.echo(primary_path)
         return
@@ -523,6 +740,37 @@ def _job_summary(job: web_app.Job) -> dict:
         "source_url": job.url,
         "output_dir": job.output_dir,
     }
+
+
+def _result_path_is_available(result: dict, key: str) -> bool:
+    exists_key_by_path = {
+        "primary_path": "primary_exists",
+        "knowledge_path": "knowledge_exists",
+        "markdown_path": "markdown_exists",
+        "raw_path": "raw_exists",
+        "article_path": "article_exists",
+        "meta_path": "meta_exists",
+    }
+    exists_key = exists_key_by_path.get(key)
+    return bool(result.get(exists_key, True))
+
+
+def _primary_result_path(result: dict) -> str | None:
+    for key in (
+        "primary_path",
+        "knowledge_path",
+        "transcript_path",
+        "markdown_path",
+        "download_path",
+        "artifact_dir",
+        "raw_path",
+        "article_path",
+        "meta_path",
+    ):
+        value = result.get(key)
+        if value and _result_path_is_available(result, key):
+            return str(value)
+    return None
 
 
 def _exit_for_failures(results: list[dict]) -> None:
@@ -626,9 +874,12 @@ def _run_download_jobs(
     preset: str,
     use_cookies: bool,
     generate_transcript: bool,
+    output_dir: Path | None = None,
     jobs: int = 1,
     on_result=None,
 ) -> list[dict]:
+    resolved_output_dir = str(output_dir.expanduser().resolve()) if output_dir is not None else None
+
     def run_single(url: str) -> dict:
         job = web_app.Job(
             job_id=uuid.uuid4().hex,
@@ -636,6 +887,7 @@ def _run_download_jobs(
             preset=preset,
             use_cookies=use_cookies,
             generate_transcript=generate_transcript,
+            output_dir=resolved_output_dir,
         )
         web_app.run_job(job)
         return _job_summary(job)
@@ -858,9 +1110,12 @@ def _artifact_record_with_metadata(target: Path, *, include_full_metadata: bool)
     metadata = {}
     if meta_path.exists():
         metadata = json.loads(meta_path.read_text(encoding="utf-8"))
+    primary_path = _primary_artifact_path(artifact_paths)
 
     return {
         "target": str(target.expanduser().resolve()),
+        "primary_path": str(primary_path) if primary_path else None,
+        "primary_exists": primary_path is not None,
         "artifact_dir": str(artifact_paths["markdown_path"].parent),
         "raw_path": str(artifact_paths["raw_path"]),
         "article_path": str(artifact_paths["article_path"]),
@@ -874,6 +1129,15 @@ def _artifact_record_with_metadata(target: Path, *, include_full_metadata: bool)
         "meta_exists": meta_path.exists(),
         "metadata": metadata if include_full_metadata else _summarize_metadata(metadata),
     }
+
+
+def _primary_artifact_path(artifact_paths: dict[str, Path]) -> Path | None:
+    for key in ("markdown_path", "knowledge_path", "article_path", "raw_path", "meta_path"):
+        path = artifact_paths[key]
+        if path.exists():
+            return path
+    artifact_dir = artifact_paths["markdown_path"].parent
+    return artifact_dir if artifact_dir.exists() else None
 
 
 def _load_artifact_metadata(artifact_paths: dict[str, Path]) -> dict:
@@ -1336,6 +1600,7 @@ def capture_command(
                     or bool(douyin_cookies_from_browser)
                 ),
                 generate_transcript=True,
+                output_dir=output_dir,
                 jobs=jobs,
                 on_result=checkpoint_writer.record,
             )
@@ -1581,6 +1846,7 @@ def download_command(
                     or bool(douyin_cookies_from_browser)
                 ),
                 generate_transcript=transcript,
+                output_dir=output_dir,
                 jobs=jobs,
                 on_result=checkpoint_writer.record,
             )
@@ -1769,82 +2035,13 @@ def audio_command(
 @click.option("--json", "as_json", is_flag=True, help="输出机器可读 JSON。")
 def doctor_command(as_json: bool) -> None:
     """检查依赖和云端接口配置状态。"""
-    subtitle_auth_configured = web_app.platform_auth_configured("Unknown")
-    settings = web_app.current_runtime_settings()
-    report = {
-        "settings_path": settings["settings_path"],
-        "settings_dir": settings["settings_dir"],
-        "download_dir": web_app.DOWNLOAD_DIR,
-        "download_root_dir": settings["download_root_dir"],
-        "download_root_locked": settings["download_root_locked"],
-        "ffmpeg_bin": web_app.FFMPEG_BIN,
-        "ffmpeg_found": shutil.which(web_app.FFMPEG_BIN) is not None,
-        "yt_dlp_found": shutil.which("yt-dlp") is not None,
-        "transcript_route_strategy": "subtitle_first_then_audio_fallback",
-        "subtitle_auth_configured": subtitle_auth_configured,
-        "youtube_auth_configured": web_app.platform_auth_configured("YouTube"),
-        "bilibili_auth_configured": web_app.platform_auth_configured("Bilibili"),
-        "douyin_auth_configured": web_app.platform_auth_configured("Douyin"),
-        "ytdlp_remote_components": list(web_app.YTDLP_REMOTE_COMPONENTS),
-        "transcription_enabled": web_app.ENABLE_TRANSCRIPTION,
-        "openrouter_base_url": web_app.OPENROUTER_BASE_URL,
-        "transcription_model": web_app.OPENROUTER_TRANSCRIPTION_MODEL,
-        "openrouter_key_configured": bool(web_app.transcribe_audio.__globals__.get("OPENROUTER_API_KEY")),
-        "cleanup_enabled": web_app.AI_CLEANUP_ENABLED,
-        "cleanup_base_url": web_app.AI_CLEANUP_BASE_URL,
-        "cleanup_model": web_app.AI_CLEANUP_MODEL,
-        "cleanup_key_configured": bool(web_app.cleanup_transcript.__globals__.get("AI_CLEANUP_API_KEY")),
-        "cleanup_prompt_file": web_app.AI_CLEANUP_PROMPT_FILE,
-        "cleanup_prompt_source": settings["ai_cleanup_prompt_source"],
-        "cleanup_prompt_exists": Path(web_app.AI_CLEANUP_PROMPT_FILE).exists(),
-        "article_enabled": web_app.ENABLE_ARTICLE_DRAFT,
-        "article_base_url": web_app.ARTICLE_DRAFT_BASE_URL,
-        "article_model": web_app.ARTICLE_DRAFT_MODEL,
-        "article_key_configured": bool(
-            web_app.generate_ai_article_draft.__globals__.get("ARTICLE_DRAFT_API_KEY")
-        ),
-        "article_prompt_file": web_app.ARTICLE_DRAFT_PROMPT_FILE,
-        "article_prompt_source": settings["article_draft_prompt_source"],
-        "article_prompt_exists": Path(web_app.ARTICLE_DRAFT_PROMPT_FILE).exists(),
-        "knowledge_enabled": cleanup_backend.ENABLE_KNOWLEDGE_DRAFT,
-        "knowledge_base_url": cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL,
-        "knowledge_model": cleanup_backend.KNOWLEDGE_DRAFT_MODEL,
-        "knowledge_key_configured": bool(cleanup_backend.KNOWLEDGE_DRAFT_API_KEY),
-        "knowledge_prompt_file": cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE,
-        "knowledge_prompt_source": settings["knowledge_draft_prompt_source"],
-        "knowledge_prompt_exists": Path(cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE).exists(),
-        "cookies_path": web_app.COOKIES_PATH or None,
-        "cookies_exists": bool(web_app.COOKIES_PATH) and Path(web_app.COOKIES_PATH).exists(),
-        "cookies_from_browser": web_app.COOKIES_FROM_BROWSER or None,
-        "youtube_cookies_path": web_app.YOUTUBE_COOKIES_PATH or None,
-        "youtube_cookies_exists": bool(web_app.YOUTUBE_COOKIES_PATH) and Path(web_app.YOUTUBE_COOKIES_PATH).exists(),
-        "youtube_cookies_from_browser": web_app.YOUTUBE_COOKIES_FROM_BROWSER or None,
-        "bilibili_cookies_path": web_app.BILIBILI_COOKIES_PATH or None,
-        "bilibili_cookies_exists": bool(web_app.BILIBILI_COOKIES_PATH) and Path(web_app.BILIBILI_COOKIES_PATH).exists(),
-        "bilibili_cookies_from_browser": web_app.BILIBILI_COOKIES_FROM_BROWSER or None,
-        "douyin_cookies_path": web_app.DOUYIN_COOKIES_PATH or None,
-        "douyin_cookies_exists": bool(web_app.DOUYIN_COOKIES_PATH) and Path(web_app.DOUYIN_COOKIES_PATH).exists(),
-        "douyin_cookies_from_browser": web_app.DOUYIN_COOKIES_FROM_BROWSER or None,
-        "transcript_capture_ready": (
-            shutil.which("yt-dlp") is not None
-            and web_app.ENABLE_TRANSCRIPTION
-            and bool(web_app.transcribe_audio.__globals__.get("OPENROUTER_API_KEY"))
-        ),
-        "knowledge_capture_ready": (
-            shutil.which("yt-dlp") is not None
-            and web_app.ENABLE_TRANSCRIPTION
-            and bool(web_app.transcribe_audio.__globals__.get("OPENROUTER_API_KEY"))
-            and cleanup_backend.ENABLE_KNOWLEDGE_DRAFT
-            and bool(cleanup_backend.KNOWLEDGE_DRAFT_API_KEY)
-        ),
-    }
+    report = _doctor_report()
 
     if as_json:
         click.echo(json.dumps(report, ensure_ascii=False, indent=2))
         return
 
-    for key, value in report.items():
-        click.echo(f"{key}: {value}")
+    click.echo(_format_doctor_report(report))
 
 
 @main.command("artifacts")

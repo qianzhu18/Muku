@@ -8,6 +8,58 @@
 
 幕库面向 Bilibili、YouTube、Douyin 等知识密度高的平台。它的重点不是做一个“什么都下”的通用下载器，而是把链接、片单、创作者列表和本地音频沉淀为可以长期复用的知识资产。当前项目同时提供 `Web UI + CLI + Docker + Skill` 四套入口。
 
+## 我该怎么开始
+
+- 新手第一次使用：优先走 `Docker Desktop + Web UI`
+- 想批量处理、接入脚本或 agent：优先走 `CLI`
+- 想把能力装进 Codex：用仓库自带的 `Skill`
+
+如果你是 Windows 新手用户，建议先看 [docs/windows.md](docs/windows.md)。
+
+## 官方验证矩阵
+
+| 系统 / 环境 | 推荐入口 | 当前状态 | 说明 |
+| --- | --- | --- | --- |
+| Windows 11 + Docker Desktop | Web UI | 已验证 | 适合第一次使用 |
+| macOS + Docker Desktop | Web UI | 已验证 | 推荐默认部署方式 |
+| macOS + Python 3.12 | CLI / 本地 Web | 已验证 | 适合开发与调试 |
+| Ubuntu / Linux | CLI | CI 持续验证 | 更适合开发者与服务器 |
+
+## 3 分钟快速开始
+
+对新手来说，最稳的入口是 Docker。
+
+### macOS / Linux
+
+```bash
+cp .env.example .env
+docker compose up -d --build
+```
+
+### Windows PowerShell
+
+```powershell
+Copy-Item .env.example .env
+docker compose up -d --build
+```
+
+默认访问地址：
+
+```text
+http://localhost:8080
+```
+
+第一次启动后，建议立刻做这三步：
+
+1. 打开右上角“设置”
+2. 设置默认下载目录和模型 / Key
+3. 跑一次 `doctor`
+
+```bash
+docker compose exec ytdl-webui video-downloade doctor
+docker compose exec ytdl-webui video-downloade doctor --json
+```
+
 ## 幕库是什么
 
 幕库，英文名 `Muku`，是一个面向 Bilibili、YouTube、Douyin 等平台的 `Video-to-Markdown` 工具。
@@ -32,7 +84,7 @@
 
 ## 幕库适合什么场景
 
-- 单条视频链接直接整理为 `逐字稿.md`、`解析稿.md`、`知识库.md`
+- 单条视频链接在 Web 默认整理为 `逐字稿.md`、`解析稿.md`；需要时可在 Web 显式勾选知识库稿，任务详情里也能直接预览这些产物
 - 批量把 B 站合集、YouTube 系列、抖音分享列表沉淀到本地知识库
 - 把研究型、课程型、访谈型、播客型内容转为 Markdown 资产
 - 让 AI agent 根据 skill 自动执行 `采集链接 -> 批量入库 -> 返回产物路径`
@@ -48,9 +100,9 @@
 
 | 平台 | 输入形态 | 推荐认证方式 | 当前说明 |
 | --- | --- | --- | --- |
-| YouTube | 网页链接、分享链接 | `YOUTUBE_COOKIES_FROM_BROWSER=chrome` | 字幕优先，部分视频依赖 `YTDLP_REMOTE_COMPONENTS=ejs:github` |
-| Bilibili | 网页链接、分享文案 | `BILIBILI_COOKIES_FROM_BROWSER=chrome` 或 `BILIBILI_COOKIES_PATH` | 高知识密度视频场景表现更好 |
-| Douyin | 网页链接、分享短链、分享文案 | `DOUYIN_COOKIES_FROM_BROWSER=chrome` 或 `DOUYIN_COOKIES_PATH` | 适合用来沉淀短视频里的观点和素材 |
+| YouTube | 网页链接、分享链接 | Docker 优先 `YOUTUBE_COOKIES_PATH`；本地运行可用 `YOUTUBE_COOKIES_FROM_BROWSER=chrome` | 字幕优先，部分视频依赖 `YTDLP_REMOTE_COMPONENTS=ejs:github` |
+| Bilibili | 网页链接、分享文案 | Docker 优先 `BILIBILI_COOKIES_PATH`；本地运行可用 `BILIBILI_COOKIES_FROM_BROWSER=chrome` | 高知识密度视频场景表现更好 |
+| Douyin | 网页链接、分享短链、分享文案 | Docker 优先 `DOUYIN_COOKIES_PATH`；本地运行可用 `DOUYIN_COOKIES_FROM_BROWSER=chrome` | 适合用来沉淀短视频里的观点和素材 |
 
 建议第一次使用前先跑：
 
@@ -58,29 +110,46 @@
 video-downloade doctor --json
 ```
 
+注意：`doctor` 现在会把认证状态拆成 `configured` 和 `verified` 两层。浏览器登录态通常只能算“已配置”，真正的 `verified` 更偏向容器内可见的 `cookies.txt` 或一次真实任务验证；Docker 环境更稳的默认方案仍是挂载平台专用 `cookies.txt`。
+
 ## 核心工作流
 
 1. 输入单条链接、分享文案、批量 URL 列表，或直接输入本地音频
 2. 优先直提平台字幕，失败后回退到 MP3 转写
-3. 生成逐字稿、解析稿、知识库稿和转写 metadata
+3. 生成逐字稿、解析稿，以及按入口 / 开关决定是否继续生成知识库稿和转写 metadata
 4. 产物落到本地文件系统，继续喂给 Obsidian、RAG、AI agent 或你自己的知识库流程
 
-默认产物包括：
+按入口区分的默认产物：
 
-- `xxx - 原始逐字稿.txt`
-- `xxx - 逐字稿.md`
-- `xxx - 解析稿.md`
-- `xxx - 知识库.md`
+- Web UI 默认产出：`xxx - 原始逐字稿.txt`、`xxx - 逐字稿.md`、`xxx - 解析稿.md`、`xxx - 转写信息.json`
+- Web UI 勾选“生成知识库稿”后：会继续产出 `xxx - 知识库.md`
+- CLI 在传入 `--knowledge` 时，或后续单独运行 `video-downloade knowledge` 时，会额外生成 `xxx - 知识库.md`
+
+文件说明：
+
+- `xxx - 原始逐字稿.txt`：原始逐字稿，仅保留原始文本
+- `xxx - 逐字稿.md`：清洗后的逐字稿正文，不重复附带原始稿或解析稿
+- `xxx - 解析稿.md`：最终解析成稿正文，默认遵循 `解析提示词.md`
+- `xxx - 知识库.md`：在 Web 显式勾选知识库稿、CLI `--knowledge`，或后续单独整理时生成
 - `xxx - 转写信息.json`
 
 ## 快速开始
 
 ### Docker Compose
 
-推荐的默认部署方式：
+推荐给第一次使用项目的用户：
+
+macOS / Linux：
 
 ```bash
 cp .env.example .env
+docker compose up -d --build
+```
+
+Windows PowerShell：
+
+```powershell
+Copy-Item .env.example .env
 docker compose up -d --build
 ```
 
@@ -100,7 +169,7 @@ http://localhost:8080
 启动后推荐先做三步：
 
 1. 打开网页右上角的“设置”
-2. 在设置抽屉里配置默认下载目录、转写服务、清洗/解析/知识库模型与提示词
+2. 在设置抽屉里配置默认下载目录、转写服务、清洗/解析模型与提示词；知识库整理配置主要供 CLI `--knowledge` 和后续整理链路复用
 3. 回到双栏工作台左侧发起任务，右侧观察队列与详情，再做一次容器内自检
 
 ```bash
@@ -119,13 +188,26 @@ docker compose exec ytdl-webui \
 
 ### 本地运行
 
+macOS / Linux：
+
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
 pip install -e .
 cp .env.example .env
-python webui/app.py
+video-downloade serve --port 8080
+```
+
+Windows PowerShell：
+
+```powershell
+py -3.12 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements.txt
+python -m pip install -e .
+Copy-Item .env.example .env
+video-downloade serve --port 8080
 ```
 
 如果你只想用 CLI：
@@ -133,6 +215,15 @@ python webui/app.py
 ```bash
 python -m webui.cli --help
 ```
+
+## 能力矩阵
+
+| 入口 | 适合场景 | 默认产物 | 知识库稿 | 推荐认证方式 |
+| --- | --- | --- | --- | --- |
+| Web UI | 单条链接、人工观察任务状态、在线预览产物 | 原始逐字稿、逐字稿、解析稿、metadata | 默认不直接生成；可显式勾选知识库稿 | Docker 优先平台专用 `cookies.txt`；本地运行可用浏览器登录态或 `cookies.txt` |
+| CLI | 批量任务、脚本、agent、断点续跑 | 按命令生成逐字稿链路产物 | `--knowledge` 或 `video-downloade knowledge` | 平台专用 `cookies.txt` 最稳；本地运行时可用 `*_COOKIES_FROM_BROWSER` |
+| Docker Compose | Web UI + 容器内 CLI | 网页默认产物同 Web；容器内 CLI 可跑完整链路 | 通过容器内 CLI 完整支持 | 优先挂载 `./cookies:/cookies:ro` 并配置 `DOCKER_*_COOKIES_PATH` |
+| Skill | AI 自动入库、批量采集后处理 | 取决于 skill 调用的 CLI 参数 | 通常走 CLI `--knowledge` | 跟随底层 CLI / Docker 配置 |
 
 ## 关键环境变量
 
@@ -145,17 +236,27 @@ python -m webui.cli --help
 - `OPENROUTER_BASE_URL`：转写服务 Base URL，支持兼容 OpenRouter 的网关
 - `AI_CLEANUP_API_KEY`：清洗稿必需
 - `ARTICLE_DRAFT_API_KEY`：解析稿必需
-- `YOUTUBE_COOKIES_FROM_BROWSER` / `YOUTUBE_COOKIES_PATH`：提升 YouTube 字幕直提和下载成功率
-- `BILIBILI_COOKIES_FROM_BROWSER` / `BILIBILI_COOKIES_PATH`：提升 B 站字幕直提成功率
-- `DOUYIN_COOKIES_FROM_BROWSER` / `DOUYIN_COOKIES_PATH`：为受限抖音内容预留登录态
+- `YOUTUBE_COOKIES_PATH`：Docker 和本地运行都适用，是更稳的 YouTube 登录态方案
+- `BILIBILI_COOKIES_PATH`：Docker 和本地运行都适用，是更稳的 B 站登录态方案
+- `DOUYIN_COOKIES_PATH`：Docker 和本地运行都适用，是更稳的抖音登录态方案
+- `YOUTUBE_COOKIES_FROM_BROWSER` / `BILIBILI_COOKIES_FROM_BROWSER` / `DOUYIN_COOKIES_FROM_BROWSER`：更适合本地 Python 运行时直接复用浏览器登录态
 - `YTDLP_REMOTE_COMPONENTS=ejs:github`：为部分受 JS challenge 保护的 YouTube 视频启用格式解析
 
 推荐的认证检查顺序：
 
+本地 Python 运行：
+
 1. 先在浏览器登录目标平台
 2. 优先用 `*_COOKIES_FROM_BROWSER=chrome`
-3. 再跑 `video-downloade doctor --json` 确认 `*_auth_configured` 已变成 `true`
+3. 再跑 `video-downloade doctor --json`，确认对应平台至少进入 `configured`；如果你换成 `cookies.txt`，则还能进一步看到 `verified`
 4. 浏览器方案不可用时，再回退到 `*_COOKIES_PATH=/absolute/path/to/cookies.txt`
+
+Docker 运行：
+
+1. 先导出平台专用 `cookies.txt`
+2. 通过 `./cookies:/cookies:ro` 挂进容器，并配置 `DOCKER_*_COOKIES_PATH=/cookies/*.cookies.txt`
+3. 再跑 `video-downloade doctor --json`
+4. 只有在你确认容器能读取宿主机浏览器配置时，再把 `*_COOKIES_FROM_BROWSER` 当调试手段，而不是默认方案
 
 如果你是 Docker 部署用户，需要区分两层路径：
 
@@ -213,16 +314,51 @@ video-downloade serve --port 8080
 
 更多命令和参数见 [docs/cli.md](docs/cli.md)。
 
+## 第一次排障建议
+
+如果你是第一次部署，优先按这个顺序检查：
+
+1. 运行 `video-downloade doctor`
+2. 确认 `ffmpeg` 和 `yt-dlp` 是 `OK`
+3. 确认 `transcript capture` 是 `OK`
+4. 如果 YouTube / Douyin 失败率高，再补平台专用 Cookies；Docker 优先 `cookies.txt`
+
+补一句：`doctor` 现在会直接展示 `configured` 和 `verified`。如果你在 Docker 里看到浏览器登录态停留在 `CONFIGURED_ONLY`，这不是 bug，而是它故意提醒你“容器里这类来源无法预检”，这时更稳的方案仍是平台专用 `cookies.txt`。
+
+如果你看到“response was truncated before completion”这类报错，说明远端转写响应被截断了。优先尝试：
+
+- 确认当前版本已经启用默认的 chunked ASR；长音频会优先按固定时长切片再转写
+- 改用平台直提字幕
+- 把 `TRANSCRIPTION_CHUNK_SECONDS` 调小，例如从 `600` 改到 `300`
+- 后续再补知识库整理，不要第一次就把链路拉满
+
 ## Web 工作台
 
 当前 Web UI 已经改成更适合日常使用的双栏工作台：
 
 - 桌面端默认是单屏双栏：左侧发任务，右侧盯队列和详情
 - 左侧：发起新任务、选择模式、临时覆盖本次保存目录
-- 右侧：观察任务队列、切换到单条任务详情、看输出路径和报错
+- 右侧：观察任务队列、切换到单条任务详情、看输出路径、报错和产物预览
 - 右上角“设置”：打开折叠式配置抽屉，集中维护默认下载目录、模型、服务地址和提示词
+- 当前网页任务默认产出逐字稿和解析稿；如果你已经补齐知识库配置，也可以在提交任务时显式勾选继续生成 `知识库.md`
 
 这样页面不会再因为配置项太多而无限变长，部署后也更适合直接给自己或小团队使用。
+
+## 迁移到另一台电脑
+
+如果你要把幕库迁到另一台电脑，最少需要关注这几类内容：
+
+- 建议复制：
+  - `.env`
+  - `docker-data/config/settings.json`
+  - 可选的 `docker-data/downloads`
+- 需要重新检查：
+  - 绝对下载路径是否仍存在
+  - `*_COOKIES_PATH` 或 `DOCKER_*_COOKIES_PATH` 是否仍指向正确文件
+  - Docker volume 映射是否仍然成立
+  - 本地 Python 运行时的 `*_COOKIES_FROM_BROWSER` 在新机器上是否真的可用
+
+一个实用原则是：配置可以迁，路径和登录态要重新验证。
 
 ## Skill 与 AI 自动入库
 
@@ -258,7 +394,7 @@ video-downloade capture \
 
 - 协议：MIT，见 [LICENSE](LICENSE)
 - 适合个人、本地、自托管、小团队内部使用
-- 当前 Docker、CLI、Web UI、Skill 四条入口已经对齐
+- 当前 Docker、CLI、Web UI、Skill 共享同一套底层链路，但 Web 默认仍更聚焦单条任务与逐字稿 / 解析稿
 - 目前网页端保存的是本地或私有部署配置，不建议直接暴露为公网多人共用面板
 
 ## 文档入口
