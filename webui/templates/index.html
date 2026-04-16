@@ -234,6 +234,19 @@
                   autofocus
                   required
                 ></textarea>
+                <div class="task-submit-bar">
+                  <button type="submit" id="start-btn" class="btn-primary">开始下载视频</button>
+                  <button id="paste-clipboard-btn" type="button" class="nav-button">
+                    从剪贴板粘贴
+                  </button>
+                  <button id="clear-url-btn" type="button" class="nav-button ghost-button">
+                    清空
+                  </button>
+                </div>
+                <p id="task-submit-help" class="field-help task-submit-help">
+                  粘贴一条链接后直接开始；队列和产物预览会在右侧自动更新。
+                </p>
+                <div id="task-feedback" class="task-feedback is-hidden" role="status" aria-live="polite"></div>
                 <div class="task-capture-foot">
                   <p class="field-help">
                     支持直接粘贴一整段分享文案，系统会自动提取其中的链接。
@@ -263,22 +276,6 @@
               </div>
 
               <select id="preset" name="preset" hidden></select>
-
-              <div class="task-submit-bar">
-                <button type="submit" id="start-btn" class="btn-primary">开始下载视频</button>
-                <button id="paste-clipboard-btn" type="button" class="nav-button">
-                  从剪贴板粘贴
-                </button>
-                <button id="clear-url-btn" type="button" class="nav-button ghost-button">
-                  清空
-                </button>
-              </div>
-
-              <div id="task-feedback" class="task-feedback is-hidden" role="status" aria-live="polite"></div>
-
-              <p id="task-submit-help" class="field-help task-submit-help">
-                粘贴一条链接后直接开始；队列和产物预览会在右侧自动更新。
-              </p>
 
               <details id="task-advanced" class="task-advanced">
                 <summary>高级选项</summary>

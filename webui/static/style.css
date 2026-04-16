@@ -483,7 +483,7 @@ textarea {
 }
 
 #url {
-  min-height: 260px;
+  min-height: clamp(180px, 25vh, 240px);
   padding: 18px 20px;
   border-radius: 22px;
   border-color: rgba(125, 196, 142, 0.22);
@@ -500,7 +500,7 @@ textarea {
 
 .task-capture-panel {
   display: grid;
-  gap: 14px;
+  gap: 12px;
   padding: 20px;
   border-radius: calc(var(--radius-lg) - 2px);
   border: 1px solid rgba(125, 196, 142, 0.16);
@@ -550,7 +550,7 @@ textarea {
 .mode-selector {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 12px;
+  gap: 10px;
 }
 
 .mode-card {
@@ -558,8 +558,8 @@ textarea {
   width: 100%;
   text-align: left;
   display: grid;
-  gap: 8px;
-  padding: 16px;
+  gap: 6px;
+  padding: 14px;
   border-radius: var(--radius-md);
   border: 1px solid var(--border);
   background: rgba(255, 255, 255, 0.02);
@@ -607,10 +607,10 @@ textarea {
 }
 
 .task-submit-bar {
-  display: flex;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
   align-items: stretch;
   gap: 12px;
-  flex-wrap: wrap;
 }
 
 .task-submit-bar .nav-button {
@@ -620,6 +620,7 @@ textarea {
 
 .task-submit-help {
   padding-inline: 2px;
+  margin-top: -2px;
 }
 
 .task-feedback {
@@ -801,7 +802,8 @@ textarea {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: min(360px, 100%);
+  width: 100%;
+  min-width: 0;
   min-height: 56px;
   padding: 15px 22px;
   font-size: 1rem;
@@ -1433,7 +1435,8 @@ body.settings-open .settings-drawer {
 
   .mode-selector,
   .task-capture-head,
-  .task-capture-foot {
+  .task-capture-foot,
+  .task-submit-bar {
     grid-template-columns: 1fr;
     flex-direction: column;
     align-items: stretch;
