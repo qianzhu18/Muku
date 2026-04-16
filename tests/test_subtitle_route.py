@@ -1339,7 +1339,7 @@ class TranscriptRoutingTests(unittest.TestCase):
     def test_frontend_config_exposes_primary_presets(self) -> None:
         payload = web_app.frontend_config()
 
-        self.assertEqual(payload["defaultPreset"], web_app.TRANSCRIPT_PRESET_NAME)
+        self.assertEqual(payload["defaultPreset"], web_app.VIDEO_PRESET_NAME)
         self.assertEqual(payload["videoPreset"], web_app.VIDEO_PRESET_NAME)
         self.assertEqual(payload["audioPreset"], web_app.AUDIO_PRESET_NAME)
         self.assertEqual(payload["transcriptPreset"], web_app.TRANSCRIPT_PRESET_NAME)

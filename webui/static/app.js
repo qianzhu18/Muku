@@ -2,18 +2,10 @@ const config = window.APP_CONFIG || {};
 config.settings = config.settings || {};
 config.platformAuth = config.platformAuth || {};
 
-const urlInput = document.getElementById("url");
 const presetSelect = document.getElementById("preset");
 const taskList = document.getElementById("task-list");
 const form = document.getElementById("download-form");
 const startBtn = document.getElementById("start-btn");
-const pasteClipboardBtn = document.getElementById("paste-clipboard-btn");
-const clearUrlBtn = document.getElementById("clear-url-btn");
-const taskFeedback = document.getElementById("task-feedback");
-const taskAdvanced = document.getElementById("task-advanced");
-const taskEntrySummary = document.getElementById("task-entry-summary");
-const taskSubmitHelp = document.getElementById("task-submit-help");
-const modeCards = Array.from(document.querySelectorAll(".mode-card"));
 const queueCount = document.getElementById("queue-count");
 const modeHint = document.getElementById("mode-hint");
 const cookiesHint = document.getElementById("cookies-hint");
@@ -23,11 +15,9 @@ const knowledgeOptionHint = document.getElementById("knowledge-option-hint");
 const downloadDirInput = document.getElementById("download-dir");
 const downloadDirHint = document.getElementById("download-dir-hint");
 const starterGuide = document.getElementById("starter-guide");
-const starterGuideSummary = starterGuide.querySelector("summary");
 const starterTitle = document.getElementById("starter-title");
 const starterSubtitle = document.getElementById("starter-subtitle");
 const starterProgress = document.getElementById("starter-progress");
-const starterToggleLabel = document.getElementById("starter-toggle-label");
 const starterChecklist = document.getElementById("starter-checklist");
 const starterPlatforms = document.getElementById("starter-platforms");
 const starterCallout = document.getElementById("starter-callout");
@@ -103,8 +93,6 @@ let autoPromptedForWebToken = false;
 let selectedArtifactKind = null;
 const artifactPreviewCache = new Map();
 const artifactPreviewInFlight = new Map();
-let isSubmitting = false;
-let starterGuideTouched = false;
 
 (function init() {
   hydrateWebTokenFromLocation();
@@ -118,7 +106,7 @@ let starterGuideTouched = false;
     presetSelect.appendChild(opt);
   });
 
-  presetSelect.value = config.transcriptPreset || config.defaultPreset;
+  presetSelect.value = config.defaultPreset;
   cookiesCheckbox.checked = Boolean(config.cookiesConfigured);
   syncTopLevelConfig();
   hydrateSettings(config.settings);
@@ -143,32 +131,7 @@ function bindEvents() {
     updateSubmitLabel();
   });
 
-  modeCards.forEach((button) => {
-    button.addEventListener("click", () => {
-      const preset = presetForRole(button.dataset.presetRole || "");
-      if (!preset) {
-        return;
-      }
-      presetSelect.value = preset;
-      updateModeHint();
-      updateKnowledgeOption();
-      updateSubmitLabel();
-    });
-  });
-
-  urlInput.addEventListener("input", () => {
-    clearTaskFeedback();
-    updateSubmitLabel();
-  });
-
-  pasteClipboardBtn.addEventListener("click", pasteUrlFromClipboard);
-  clearUrlBtn.addEventListener("click", clearUrlField);
-  cookiesCheckbox.addEventListener("change", updateSubmitLabel);
   downloadDirInput.addEventListener("input", updateDownloadDirHint);
-  starterGuideSummary.addEventListener("click", () => {
-    starterGuideTouched = true;
-  });
-  starterGuide.addEventListener("toggle", updateStarterGuideToggleLabel);
 
   form.addEventListener("submit", submitDownloadForm);
   settingsForm.addEventListener("submit", submitSettingsForm);
@@ -219,16 +182,15 @@ function bindEvents() {
 
 async function submitDownloadForm(event) {
   event.preventDefault();
-  const url = urlInput.value;
+  const url = document.getElementById("url").value;
   const preset = presetSelect.value;
   const cookies = cookiesCheckbox.checked;
   const generateTranscript = preset === config.transcriptPreset;
   const generateKnowledge = generateKnowledgeCheckbox.checked && !generateKnowledgeCheckbox.disabled;
   const downloadDir = downloadDirInput.value.trim();
 
-  isSubmitting = true;
-  showTaskFeedback("info", "正在把任务加入队列，马上会切到右侧观察面板。");
-  updateSubmitLabel();
+  startBtn.disabled = true;
+  startBtn.textContent = "提交中...";
 
   try {
     const res = await apiFetch("/api/start", {
@@ -243,47 +205,20 @@ async function submitDownloadForm(event) {
         download_dir: downloadDir,
       }),
     });
-    const data = await res.json().catch(() => ({}));
     if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
       throw new Error(data.error || `HTTP ${res.status}`);
     }
-    const jobIds = Array.isArray(data.job_ids) ? data.job_ids : [];
-    if (jobIds.length) {
-      selectedTaskId = jobIds[0];
-      selectedArtifactKind = null;
-    }
-    urlInput.value = "";
+    document.getElementById("url").value = "";
     downloadDirInput.value = "";
     generateKnowledgeCheckbox.checked = false;
-    taskAdvanced.open = false;
     updateDownloadDirHint();
     updateKnowledgeOption();
-    await poll();
-    setMonitorPanel(jobIds.length ? "detail" : "queue");
-    renderTaskDetail();
-    showTaskFeedback(
-      "success",
-      data.count > 1
-        ? `已接收 ${data.count} 条任务，右侧已经切到观察面板。`
-        : "任务已加入队列，右侧已经切到观察面板。",
-    );
-    if (window.innerWidth < 1120) {
-      document.querySelector(".monitor-column")?.scrollIntoView({ behavior: "smooth", block: "start" });
-    }
+    poll();
   } catch (err) {
-    const failure = explainSubmitFailure(err?.message || String(err));
-    if (failure.openAdvanced) {
-      taskAdvanced.open = true;
-    }
-    if (failure.openSettings) {
-      openSettingsDrawer();
-    }
-    if (failure.focusUrl) {
-      focusUrlInput();
-    }
-    showTaskFeedback("error", failure.message);
+    alert("提交失败: " + (err?.message || err));
   } finally {
-    isSubmitting = false;
+    startBtn.disabled = false;
     updateSubmitLabel();
   }
 }
@@ -457,7 +392,7 @@ function renderTaskList() {
   if (!latestTasks.length) {
     taskList.innerHTML = `
       <li class="empty-state">
-        暂无下载任务，去上面的入口粘贴一条吧。
+        暂无下载任务，去左侧添加一个吧。
       </li>`;
     return;
   }
@@ -513,15 +448,13 @@ function renderTaskDetail() {
   }
 
   detailEmpty.style.display = "none";
+  const backendErrorBlock = task.error && task.backend_error
+    ? renderDetailBlock("后端报错", task.backend_error)
+    : "";
+  const knowledgeErrorBlock = task.knowledge_error
+    ? renderDetailBlock("知识库报错", task.knowledge_error)
+    : "";
   const previewSection = renderArtifactPreviewSection(task);
-  const artifactStatusSection = renderArtifactStatusSection(task);
-  const metaSection = renderDetailMetaSection(task);
-  const errorBlocks = [
-    task.error && task.backend_error ? renderDetailAlert("后端报错", task.backend_error) : "",
-    task.knowledge_error ? renderDetailAlert("知识库报错", task.knowledge_error) : "",
-  ]
-    .filter(Boolean)
-    .join("");
   taskDetailContent.innerHTML = `
     <article class="detail-card">
       <div class="detail-head">
@@ -541,130 +474,22 @@ function renderTaskDetail() {
         ${renderDetailItem("Provider", task.provider || "待定")}
       </div>
 
+      <div class="detail-stack">
+        ${renderDetailBlock("来源链接", task.source_url, true)}
+        ${renderDetailBlock("保存目录", task.output_dir || config.settings.download_dir || "未显式指定")}
+        ${renderDetailBlock("下载文件", task.download_path || "尚未生成")}
+        ${renderDetailBlock("原始逐字稿", task.raw_path || "尚未生成")}
+        ${renderDetailBlock("逐字稿", task.transcript_path || "尚未生成")}
+        ${renderDetailBlock("解析稿", task.article_path || "尚未生成")}
+        ${renderDetailBlock("知识库稿", task.generate_knowledge ? (task.knowledge_path || (task.knowledge_error ? "生成失败" : "尚未生成")) : "本次未请求")}
+        ${renderDetailBlock("转写信息", task.metadata_path || "尚未生成")}
+        ${renderDetailBlock("产物目录", task.artifact_dir || "尚未生成")}
+        ${backendErrorBlock}
+        ${knowledgeErrorBlock}
+      </div>
+
       ${previewSection}
-      ${artifactStatusSection}
-      ${errorBlocks}
-      ${metaSection}
     </article>`;
-}
-
-function renderDetailAlert(label, value) {
-  return `
-    <div class="detail-alert is-error">
-      <span>${escapeHtml(label)}</span>
-      <div class="detail-block-value">${escapeHtml(value || "-")}</div>
-    </div>`;
-}
-
-function renderArtifactStatusSection(task) {
-  const items = buildArtifactStatusItems(task);
-  return `
-    <section class="detail-preview-card">
-      <div class="detail-preview-head">
-        <span class="detail-preview-label">产物状态</span>
-      </div>
-      <div class="detail-status-grid">
-        ${items.map(renderArtifactStatusCard).join("")}
-      </div>
-    </section>`;
-}
-
-function buildArtifactStatusItems(task) {
-  if (task.preset === config.transcriptPreset) {
-    return [
-      {
-        label: "逐字稿",
-        status: task.transcript_path ? "已生成" : task.done && !task.error ? "未生成" : "处理中",
-        hint: compactPathLabel(task.transcript_path) || "生成后可直接预览和导出",
-        tone: task.transcript_path ? "ready" : task.done && !task.error ? "idle" : "pending",
-      },
-      {
-        label: "解析稿",
-        status: task.article_path ? "已生成" : task.done && !task.error ? "未生成" : "处理中",
-        hint: compactPathLabel(task.article_path) || "逐字稿完成后继续整理",
-        tone: task.article_path ? "ready" : task.done && !task.error ? "idle" : "pending",
-      },
-      {
-        label: "知识库稿",
-        status: task.generate_knowledge
-          ? task.knowledge_path
-            ? "已生成"
-            : task.knowledge_error
-              ? "生成失败"
-              : task.done && !task.error
-                ? "未生成"
-                : "处理中"
-          : "本次未请求",
-        hint: compactPathLabel(task.knowledge_path) || task.knowledge_error || "按需继续整理成知识库稿",
-        tone: task.knowledge_path ? "ready" : task.knowledge_error ? "pending" : task.generate_knowledge ? "pending" : "idle",
-      },
-      {
-        label: "转写信息",
-        status: task.metadata_path ? "已生成" : task.done && !task.error ? "未生成" : "处理中",
-        hint: compactPathLabel(task.metadata_path) || "会记录 provider、route 和产物元信息",
-        tone: task.metadata_path ? "ready" : task.done && !task.error ? "idle" : "pending",
-      },
-    ];
-  }
-
-  return [
-    {
-      label: "下载文件",
-      status: task.download_path ? "已生成" : task.done && !task.error ? "未生成" : "处理中",
-      hint: compactPathLabel(task.download_path) || "文件生成后会显示在这里",
-      tone: task.download_path ? "ready" : task.done && !task.error ? "idle" : "pending",
-    },
-    {
-      label: "保存目录",
-      status: compactPathLabel(task.output_dir || config.settings.download_dir) || "默认目录",
-      hint: task.output_dir || config.settings.download_dir || "使用当前默认目录",
-      tone: "idle",
-    },
-  ];
-}
-
-function renderArtifactStatusCard(item) {
-  return `
-    <article class="detail-status-card is-${escapeHtml(item.tone || "idle")}">
-      <span>${escapeHtml(item.label)}</span>
-      <strong>${escapeHtml(item.status || "-")}</strong>
-      <small>${escapeHtml(item.hint || "")}</small>
-    </article>`;
-}
-
-function renderDetailMetaSection(task) {
-  const rows = [
-    renderMetaRow("来源链接", task.source_url, true),
-    renderMetaRow("保存目录", task.output_dir || config.settings.download_dir || "未显式指定"),
-    task.download_path ? renderMetaRow("下载文件", task.download_path) : "",
-    task.raw_path ? renderMetaRow("原始逐字稿", task.raw_path) : "",
-    task.transcript_path ? renderMetaRow("逐字稿路径", task.transcript_path) : "",
-    task.article_path ? renderMetaRow("解析稿路径", task.article_path) : "",
-    task.knowledge_path ? renderMetaRow("知识库稿路径", task.knowledge_path) : "",
-    task.metadata_path ? renderMetaRow("转写信息路径", task.metadata_path) : "",
-    task.artifact_dir ? renderMetaRow("产物目录", task.artifact_dir) : "",
-  ].filter(Boolean);
-
-  return `
-    <details class="detail-fold">
-      <summary>更多路径和来源</summary>
-      <div class="detail-fold-body">
-        <div class="detail-meta-list">
-          ${rows.join("")}
-        </div>
-      </div>
-    </details>`;
-}
-
-function renderMetaRow(label, value, isLink = false) {
-  const content = isLink && value
-    ? `<a href="${escapeHtml(value)}" target="_blank" rel="noreferrer">${escapeHtml(value)}</a>`
-    : `<strong>${escapeHtml(value || "-")}</strong>`;
-  return `
-    <div class="detail-meta-row">
-      <span>${escapeHtml(label)}</span>
-      ${content}
-    </div>`;
 }
 
 function renderDetailItem(label, value) {
@@ -905,7 +730,6 @@ function applySettings(settings) {
   updateCookiesHint();
   updateKnowledgeOption();
   updateDownloadDirHint();
-  updateSubmitLabel();
   renderStarterGuide();
 }
 
@@ -1033,35 +857,21 @@ function updateOverviewSummary() {
 
 function updateSubmitLabel() {
   const preset = presetSelect.value;
-  let nextAction = "开始下载视频";
-  let readyHint = "会直接下载最高画质视频。";
   if (preset === config.transcriptPreset) {
-    nextAction = "开始提取逐字稿";
-    readyHint = "会先尝试平台字幕，失败后再自动回退到音频转写。";
-  } else if (preset === config.audioPreset) {
-    nextAction = "开始下载 MP3";
-    readyHint = "只下载 MP3 音频，不会自动生成 Markdown。";
+    startBtn.textContent = "开始提取逐字稿";
+    return;
   }
-  startBtn.textContent = isSubmitting ? "提交中..." : nextAction;
-  startBtn.disabled = isSubmitting || !urlInput.value.trim();
-  if (isSubmitting) {
-    taskSubmitHelp.textContent = "正在把任务加入队列，右侧马上会显示新状态。";
-  } else if (urlInput.value.trim()) {
-    taskSubmitHelp.textContent = `${readyHint} 提交后右侧会自动切到观察面板。`;
-  } else {
-    taskSubmitHelp.textContent = "先把链接贴进上面的输入框；支持直接粘贴整段分享文案。";
+  if (preset === config.audioPreset) {
+    startBtn.textContent = "开始下载 MP3";
+    return;
   }
-  updateModeSelector();
-  updateTaskEntrySummary();
+  startBtn.textContent = "开始下载视频";
 }
 
 function renderStarterGuide() {
   const state = buildStarterGuideState();
   starterGuide.classList.toggle("is-ready", state.coreReady);
   starterGuide.classList.toggle("is-setup", !state.coreReady);
-  if (!starterGuideTouched) {
-    starterGuide.open = !state.coreReady && latestTasks.length === 0;
-  }
   starterTitle.textContent = state.title;
   starterSubtitle.textContent = state.subtitle;
   starterProgress.textContent = `${state.completed} / ${state.total}`;
@@ -1072,7 +882,6 @@ function renderStarterGuide() {
     <p>${escapeHtml(state.callout.body)}</p>
   `;
   starterOpenSettings.textContent = state.primaryActionLabel;
-  updateStarterGuideToggleLabel();
 }
 
 function buildStarterGuideState() {
@@ -1145,7 +954,7 @@ function buildStarterGuideState() {
 
   if (hasDownloadDir && transcriptionReady && !hasRunTask) {
     title = "核心配置已就绪";
-    subtitle = "现在可以直接在上面的输入框里粘贴一条链接，先验证第一次逐字稿任务。";
+    subtitle = "现在可以直接在下面粘贴一条链接，先验证第一次逐字稿任务。";
     callout = {
       title: verifiedPlatforms.length
         ? "可以开始第一次任务"
@@ -1229,30 +1038,6 @@ function renderPlatformPill(platform) {
     </article>`;
 }
 
-function updateStarterGuideToggleLabel() {
-  starterToggleLabel.textContent = starterGuide.open ? "收起详情" : "展开详情";
-}
-
-function presetForRole(role) {
-  if (role === "transcript") {
-    return config.transcriptPreset;
-  }
-  if (role === "audio") {
-    return config.audioPreset;
-  }
-  if (role === "video") {
-    return config.videoPreset || config.defaultPreset;
-  }
-  return "";
-}
-
-function updateModeSelector() {
-  modeCards.forEach((button) => {
-    const preset = presetForRole(button.dataset.presetRole || "");
-    button.classList.toggle("is-active", preset === presetSelect.value);
-  });
-}
-
 function updateModeHint() {
   const preset = presetSelect.value;
   const modelHint = config.transcriptionModel ? `当前默认转写模型：${config.transcriptionModel}。` : "";
@@ -1292,30 +1077,6 @@ function updateModeHint() {
   }
 
   modeHint.textContent = "当前下载最高画质视频，优先保留高分辨率并合并为 MP4。";
-}
-
-function updateTaskEntrySummary() {
-  const preset = presetSelect.value;
-  const verifiedPlatforms = collectAuthPlatforms({ verifiedOnly: true });
-  const configuredPlatforms = collectAuthPlatforms();
-  let modeSummary = "默认模式：逐字稿优先，先试平台字幕，再自动回退到音频转写。";
-  if (preset === config.audioPreset) {
-    modeSummary = "当前模式：只下载 MP3 音频，不会自动生成 Markdown。";
-  } else {
-    modeSummary = "当前模式：下载最高画质视频，适合先把素材保存下来。";
-  }
-
-  let authSummary = "当前没有已验证登录态，先试一条公开视频即可。";
-  if (verifiedPlatforms.length) {
-    authSummary = `已验证 ${verifiedPlatforms.join(" / ")}，遇到受限内容时更稳。`;
-  } else if (configuredPlatforms.length) {
-    authSummary = `已检测到 ${configuredPlatforms.join(" / ")} 配置，真实可用性仍要拿一条链接实测。`;
-  }
-
-  const cookiesSummary = cookiesCheckbox.checked
-    ? "这次会优先带上可用 Cookies。"
-    : "如果链接受限，再打开 Cookies 即可。";
-  taskEntrySummary.textContent = `${modeSummary} ${authSummary} ${cookiesSummary}`;
 }
 
 function updateKnowledgeOption() {
@@ -1406,91 +1167,6 @@ function updateCookiesHint() {
   cookiesHint.textContent = "当前已验证 Douyin 登录态。勾选“启用 Cookies”后，会优先用 Douyin 登录态访问抖音下载接口。";
 }
 
-function showTaskFeedback(tone, message) {
-  taskFeedback.textContent = message;
-  taskFeedback.className = `task-feedback is-${tone}`;
-}
-
-function clearTaskFeedback() {
-  taskFeedback.textContent = "";
-  taskFeedback.className = "task-feedback is-hidden";
-}
-
-function focusUrlInput() {
-  urlInput.focus();
-  const cursor = urlInput.value.length;
-  urlInput.setSelectionRange(cursor, cursor);
-}
-
-function clearUrlField() {
-  urlInput.value = "";
-  clearTaskFeedback();
-  updateSubmitLabel();
-  focusUrlInput();
-}
-
-async function pasteUrlFromClipboard() {
-  if (!navigator.clipboard?.readText) {
-    showTaskFeedback("error", "当前浏览器不允许自动读取剪贴板，请直接按 Cmd+V / Ctrl+V 粘贴。");
-    focusUrlInput();
-    return;
-  }
-
-  try {
-    const clipText = (await navigator.clipboard.readText()).trim();
-    if (!clipText) {
-      showTaskFeedback("error", "剪贴板现在是空的。先复制一条链接，再回来点“从剪贴板粘贴”。");
-      focusUrlInput();
-      return;
-    }
-    urlInput.value = clipText;
-    updateSubmitLabel();
-    showTaskFeedback("success", "已经把剪贴板内容填进输入框了，确认无误后直接开始即可。");
-    focusUrlInput();
-  } catch (err) {
-    showTaskFeedback("error", "没能读取剪贴板。你可以直接按 Cmd+V / Ctrl+V 粘贴，或者检查浏览器权限。");
-    focusUrlInput();
-  }
-}
-
-function explainSubmitFailure(message) {
-  const text = String(message || "").trim() || "unknown error";
-  const lower = text.toLowerCase();
-
-  if (text.includes("没有识别到可用链接") || text.includes("请输入有效的视频链接")) {
-    return {
-      message: `${text} 你可以直接粘贴原始 URL，也可以把整段分享文案原样贴进来。`,
-      focusUrl: true,
-    };
-  }
-
-  if (text.includes("最多提交")) {
-    return {
-      message: `${text} 先减少这次提交的链接数量，跑通后再继续批量导入。`,
-      focusUrl: true,
-    };
-  }
-
-  if (text.includes("下载根目录") || text.includes("download")) {
-    return {
-      message: `${text} 你可以先把“本次保存到”清空，先用默认目录试一次。`,
-      openAdvanced: true,
-    };
-  }
-
-  if (text.includes("知识库") || text.includes("API Key") || lower.includes("invalid preset")) {
-    return {
-      message: `${text} 我已经帮你保留当前输入，先补齐设置后再重试。`,
-      openAdvanced: true,
-      openSettings: text.includes("API Key") || text.includes("知识库"),
-    };
-  }
-
-  return {
-    message: `提交没有成功：${text}。先检查链接是否能打开；如果是受限内容，再勾选 Cookies 试一次。`,
-  };
-}
-
 function getPlatformAuthState(platformKey) {
   const state = (config.platformAuth && config.platformAuth[platformKey]) || {};
   const legacyConfigured = {
@@ -1567,14 +1243,6 @@ function describeTaskMode(task) {
     return `${base} + 知识库稿`;
   }
   return base;
-}
-
-function compactPathLabel(value) {
-  if (!value) {
-    return "";
-  }
-  const normalized = String(value).split(/[\\/]/).filter(Boolean);
-  return normalized[normalized.length - 1] || String(value);
 }
 
 function escapeHtml(value) {
