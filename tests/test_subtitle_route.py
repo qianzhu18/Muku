@@ -1336,6 +1336,14 @@ class TranscriptRoutingTests(unittest.TestCase):
         self.assertEqual(payload["platform_auth"]["youtube"]["status"], "verified")
         self.assertTrue(frontend_payload["platformAuth"]["youtube"]["verified"])
 
+    def test_frontend_config_exposes_primary_presets(self) -> None:
+        payload = web_app.frontend_config()
+
+        self.assertEqual(payload["defaultPreset"], web_app.TRANSCRIPT_PRESET_NAME)
+        self.assertEqual(payload["videoPreset"], web_app.VIDEO_PRESET_NAME)
+        self.assertEqual(payload["audioPreset"], web_app.AUDIO_PRESET_NAME)
+        self.assertEqual(payload["transcriptPreset"], web_app.TRANSCRIPT_PRESET_NAME)
+
     def test_api_requires_web_token_when_configured(self) -> None:
         with web_app.app.test_client() as client, mock.patch.object(web_app, "WEB_TOKEN", "secret-token"):
             missing_response = client.get("/api/tasks")

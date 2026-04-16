@@ -13,6 +13,7 @@ const taskFeedback = document.getElementById("task-feedback");
 const taskAdvanced = document.getElementById("task-advanced");
 const taskEntrySummary = document.getElementById("task-entry-summary");
 const taskSubmitHelp = document.getElementById("task-submit-help");
+const modeCards = Array.from(document.querySelectorAll(".mode-card"));
 const queueCount = document.getElementById("queue-count");
 const modeHint = document.getElementById("mode-hint");
 const cookiesHint = document.getElementById("cookies-hint");
@@ -117,7 +118,7 @@ let starterGuideTouched = false;
     presetSelect.appendChild(opt);
   });
 
-  presetSelect.value = config.defaultPreset;
+  presetSelect.value = config.transcriptPreset || config.defaultPreset;
   cookiesCheckbox.checked = Boolean(config.cookiesConfigured);
   syncTopLevelConfig();
   hydrateSettings(config.settings);
@@ -140,6 +141,19 @@ function bindEvents() {
     updateModeHint();
     updateKnowledgeOption();
     updateSubmitLabel();
+  });
+
+  modeCards.forEach((button) => {
+    button.addEventListener("click", () => {
+      const preset = presetForRole(button.dataset.presetRole || "");
+      if (!preset) {
+        return;
+      }
+      presetSelect.value = preset;
+      updateModeHint();
+      updateKnowledgeOption();
+      updateSubmitLabel();
+    });
   });
 
   urlInput.addEventListener("input", () => {
@@ -499,13 +513,15 @@ function renderTaskDetail() {
   }
 
   detailEmpty.style.display = "none";
-  const backendErrorBlock = task.error && task.backend_error
-    ? renderDetailBlock("后端报错", task.backend_error)
-    : "";
-  const knowledgeErrorBlock = task.knowledge_error
-    ? renderDetailBlock("知识库报错", task.knowledge_error)
-    : "";
   const previewSection = renderArtifactPreviewSection(task);
+  const artifactStatusSection = renderArtifactStatusSection(task);
+  const metaSection = renderDetailMetaSection(task);
+  const errorBlocks = [
+    task.error && task.backend_error ? renderDetailAlert("后端报错", task.backend_error) : "",
+    task.knowledge_error ? renderDetailAlert("知识库报错", task.knowledge_error) : "",
+  ]
+    .filter(Boolean)
+    .join("");
   taskDetailContent.innerHTML = `
     <article class="detail-card">
       <div class="detail-head">
@@ -525,22 +541,130 @@ function renderTaskDetail() {
         ${renderDetailItem("Provider", task.provider || "待定")}
       </div>
 
-      <div class="detail-stack">
-        ${renderDetailBlock("来源链接", task.source_url, true)}
-        ${renderDetailBlock("保存目录", task.output_dir || config.settings.download_dir || "未显式指定")}
-        ${renderDetailBlock("下载文件", task.download_path || "尚未生成")}
-        ${renderDetailBlock("原始逐字稿", task.raw_path || "尚未生成")}
-        ${renderDetailBlock("逐字稿", task.transcript_path || "尚未生成")}
-        ${renderDetailBlock("解析稿", task.article_path || "尚未生成")}
-        ${renderDetailBlock("知识库稿", task.generate_knowledge ? (task.knowledge_path || (task.knowledge_error ? "生成失败" : "尚未生成")) : "本次未请求")}
-        ${renderDetailBlock("转写信息", task.metadata_path || "尚未生成")}
-        ${renderDetailBlock("产物目录", task.artifact_dir || "尚未生成")}
-        ${backendErrorBlock}
-        ${knowledgeErrorBlock}
-      </div>
-
       ${previewSection}
+      ${artifactStatusSection}
+      ${errorBlocks}
+      ${metaSection}
     </article>`;
+}
+
+function renderDetailAlert(label, value) {
+  return `
+    <div class="detail-alert is-error">
+      <span>${escapeHtml(label)}</span>
+      <div class="detail-block-value">${escapeHtml(value || "-")}</div>
+    </div>`;
+}
+
+function renderArtifactStatusSection(task) {
+  const items = buildArtifactStatusItems(task);
+  return `
+    <section class="detail-preview-card">
+      <div class="detail-preview-head">
+        <span class="detail-preview-label">产物状态</span>
+      </div>
+      <div class="detail-status-grid">
+        ${items.map(renderArtifactStatusCard).join("")}
+      </div>
+    </section>`;
+}
+
+function buildArtifactStatusItems(task) {
+  if (task.preset === config.transcriptPreset) {
+    return [
+      {
+        label: "逐字稿",
+        status: task.transcript_path ? "已生成" : task.done && !task.error ? "未生成" : "处理中",
+        hint: compactPathLabel(task.transcript_path) || "生成后可直接预览和导出",
+        tone: task.transcript_path ? "ready" : task.done && !task.error ? "idle" : "pending",
+      },
+      {
+        label: "解析稿",
+        status: task.article_path ? "已生成" : task.done && !task.error ? "未生成" : "处理中",
+        hint: compactPathLabel(task.article_path) || "逐字稿完成后继续整理",
+        tone: task.article_path ? "ready" : task.done && !task.error ? "idle" : "pending",
+      },
+      {
+        label: "知识库稿",
+        status: task.generate_knowledge
+          ? task.knowledge_path
+            ? "已生成"
+            : task.knowledge_error
+              ? "生成失败"
+              : task.done && !task.error
+                ? "未生成"
+                : "处理中"
+          : "本次未请求",
+        hint: compactPathLabel(task.knowledge_path) || task.knowledge_error || "按需继续整理成知识库稿",
+        tone: task.knowledge_path ? "ready" : task.knowledge_error ? "pending" : task.generate_knowledge ? "pending" : "idle",
+      },
+      {
+        label: "转写信息",
+        status: task.metadata_path ? "已生成" : task.done && !task.error ? "未生成" : "处理中",
+        hint: compactPathLabel(task.metadata_path) || "会记录 provider、route 和产物元信息",
+        tone: task.metadata_path ? "ready" : task.done && !task.error ? "idle" : "pending",
+      },
+    ];
+  }
+
+  return [
+    {
+      label: "下载文件",
+      status: task.download_path ? "已生成" : task.done && !task.error ? "未生成" : "处理中",
+      hint: compactPathLabel(task.download_path) || "文件生成后会显示在这里",
+      tone: task.download_path ? "ready" : task.done && !task.error ? "idle" : "pending",
+    },
+    {
+      label: "保存目录",
+      status: compactPathLabel(task.output_dir || config.settings.download_dir) || "默认目录",
+      hint: task.output_dir || config.settings.download_dir || "使用当前默认目录",
+      tone: "idle",
+    },
+  ];
+}
+
+function renderArtifactStatusCard(item) {
+  return `
+    <article class="detail-status-card is-${escapeHtml(item.tone || "idle")}">
+      <span>${escapeHtml(item.label)}</span>
+      <strong>${escapeHtml(item.status || "-")}</strong>
+      <small>${escapeHtml(item.hint || "")}</small>
+    </article>`;
+}
+
+function renderDetailMetaSection(task) {
+  const rows = [
+    renderMetaRow("来源链接", task.source_url, true),
+    renderMetaRow("保存目录", task.output_dir || config.settings.download_dir || "未显式指定"),
+    task.download_path ? renderMetaRow("下载文件", task.download_path) : "",
+    task.raw_path ? renderMetaRow("原始逐字稿", task.raw_path) : "",
+    task.transcript_path ? renderMetaRow("逐字稿路径", task.transcript_path) : "",
+    task.article_path ? renderMetaRow("解析稿路径", task.article_path) : "",
+    task.knowledge_path ? renderMetaRow("知识库稿路径", task.knowledge_path) : "",
+    task.metadata_path ? renderMetaRow("转写信息路径", task.metadata_path) : "",
+    task.artifact_dir ? renderMetaRow("产物目录", task.artifact_dir) : "",
+  ].filter(Boolean);
+
+  return `
+    <details class="detail-fold">
+      <summary>更多路径和来源</summary>
+      <div class="detail-fold-body">
+        <div class="detail-meta-list">
+          ${rows.join("")}
+        </div>
+      </div>
+    </details>`;
+}
+
+function renderMetaRow(label, value, isLink = false) {
+  const content = isLink && value
+    ? `<a href="${escapeHtml(value)}" target="_blank" rel="noreferrer">${escapeHtml(value)}</a>`
+    : `<strong>${escapeHtml(value || "-")}</strong>`;
+  return `
+    <div class="detail-meta-row">
+      <span>${escapeHtml(label)}</span>
+      ${content}
+    </div>`;
 }
 
 function renderDetailItem(label, value) {
@@ -927,6 +1051,7 @@ function updateSubmitLabel() {
   } else {
     taskSubmitHelp.textContent = "先把链接贴进上面的输入框；支持直接粘贴整段分享文案。";
   }
+  updateModeSelector();
   updateTaskEntrySummary();
 }
 
@@ -1106,6 +1231,26 @@ function renderPlatformPill(platform) {
 
 function updateStarterGuideToggleLabel() {
   starterToggleLabel.textContent = starterGuide.open ? "收起详情" : "展开详情";
+}
+
+function presetForRole(role) {
+  if (role === "transcript") {
+    return config.transcriptPreset;
+  }
+  if (role === "audio") {
+    return config.audioPreset;
+  }
+  if (role === "video") {
+    return config.videoPreset || config.defaultPreset;
+  }
+  return "";
+}
+
+function updateModeSelector() {
+  modeCards.forEach((button) => {
+    const preset = presetForRole(button.dataset.presetRole || "");
+    button.classList.toggle("is-active", preset === presetSelect.value);
+  });
 }
 
 function updateModeHint() {
@@ -1422,6 +1567,14 @@ function describeTaskMode(task) {
     return `${base} + 知识库稿`;
   }
   return base;
+}
+
+function compactPathLabel(value) {
+  if (!value) {
+    return "";
+  }
+  const normalized = String(value).split(/[\\/]/).filter(Boolean);
+  return normalized[normalized.length - 1] || String(value);
 }
 
 function escapeHtml(value) {

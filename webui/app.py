@@ -2330,7 +2330,8 @@ def frontend_config() -> dict:
     auth_payload = build_platform_auth_payload()
     return {
         "presets": list(FORMAT_PRESETS.keys()),
-        "defaultPreset": VIDEO_PRESET_NAME,
+        "defaultPreset": TRANSCRIPT_PRESET_NAME,
+        "videoPreset": VIDEO_PRESET_NAME,
         "audioPreset": AUDIO_PRESET_NAME,
         "transcriptPreset": TRANSCRIPT_PRESET_NAME,
         "transcriptionEnabled": ENABLE_TRANSCRIPTION,
