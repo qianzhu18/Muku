@@ -100,6 +100,79 @@ class SubtitleParsingTests(unittest.TestCase):
         self.assertEqual(state["status"], "configured_only")
         self.assertTrue(state["docker_risky"])
 
+    def test_platform_auth_state_prefers_douyin_cookie_file_over_browser_source(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cookies_path = Path(temp_dir) / "douyin.cookies.txt"
+            cookies_path.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+
+            with mock.patch.object(web_app, "DOUYIN_COOKIES_PATH", str(cookies_path)), mock.patch.object(
+                web_app, "DOUYIN_COOKIES_FROM_BROWSER", "chrome"
+            ), mock.patch.object(web_app, "COOKIES_PATH", ""), mock.patch.object(
+                web_app, "COOKIES_FROM_BROWSER", ""
+            ):
+                state = web_app.platform_auth_state("Douyin")
+
+        self.assertEqual(state["source_kind"], "file")
+        self.assertEqual(state["status"], "verified")
+        self.assertTrue(state["verified"])
+
+    def test_platform_auth_state_unknown_uses_global_cookie_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            cookies_path = Path(temp_dir) / "cookies.txt"
+            cookies_path.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+
+            with mock.patch.object(web_app, "COOKIES_PATH", str(cookies_path)), mock.patch.object(
+                web_app, "COOKIES_FROM_BROWSER", ""
+            ), mock.patch.object(web_app, "YOUTUBE_COOKIES_PATH", ""), mock.patch.object(
+                web_app, "YOUTUBE_COOKIES_FROM_BROWSER", ""
+            ), mock.patch.object(web_app, "BILIBILI_COOKIES_PATH", ""), mock.patch.object(
+                web_app, "BILIBILI_COOKIES_FROM_BROWSER", ""
+            ), mock.patch.object(web_app, "DOUYIN_COOKIES_PATH", ""), mock.patch.object(
+                web_app, "DOUYIN_COOKIES_FROM_BROWSER", ""
+            ):
+                state = web_app.platform_auth_state("Unknown")
+
+        self.assertTrue(state["configured"])
+        self.assertTrue(state["verified"])
+        self.assertEqual(state["source_kind"], "file")
+
+    def test_platform_label_for_url_uses_friendly_extractor_names(self) -> None:
+        self.assertEqual(web_app.platform_label_for_url("https://example.com", {"extractor": "TedTalk"}), "TED")
+        self.assertEqual(
+            web_app.platform_label_for_url("https://example.com", {"extractor_key": "ArchiveOrg"}),
+            "Archive.org",
+        )
+        self.assertEqual(web_app.platform_label_for_url("https://example.com", {"extractor": "TikTok"}), "TikTok")
+
+    def test_select_subtitle_probe_languages_prefers_ranked_manual_language(self) -> None:
+        info = {
+            "subtitles": {
+                "fr": [{"ext": "vtt"}],
+                "zh-CN": [{"ext": "vtt"}],
+                "en": [{"ext": "vtt"}],
+            }
+        }
+
+        self.assertEqual(web_app.select_subtitle_probe_languages(info), ["zh-CN"])
+
+    def test_build_subtitle_probe_options_uses_requested_languages(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            job = web_app.Job(
+                job_id="subtitle-probe",
+                url="https://example.com/video",
+                preset=web_app.TRANSCRIPT_PRESET_NAME,
+                use_cookies=False,
+                generate_transcript=True,
+            )
+
+            options = web_app.build_subtitle_probe_options(
+                job,
+                temp_dir=Path(temp_dir),
+                subtitle_languages=["en"],
+            )
+
+        self.assertEqual(options["subtitleslangs"], ["en"])
+
     def test_detect_platform_supports_douyin_web_and_share_urls(self) -> None:
         self.assertEqual(
             web_app.detect_platform("https://www.douyin.com/video/1234567890"),
@@ -122,6 +195,41 @@ class SubtitleParsingTests(unittest.TestCase):
             urls,
             ["https://www.bilibili.com/video/BV14PXKBbEhy/?share_source=copy_web&vd_source=test"],
         )
+
+    def test_validate_web_start_urls_allows_trusted_video_domains_even_if_dns_is_reserved(self) -> None:
+        with mock.patch.object(web_app, "hostname_resolves_to_unsafe_ip", return_value=True):
+            web_app.validate_web_start_urls(
+                [
+                    "https://www.bilibili.com/video/BV14PXKBbEhy/",
+                    "https://www.youtube.com/watch?v=abcdefghijk",
+                    "https://v.douyin.com/iABCDE12/",
+                ]
+            )
+
+    def test_validate_web_start_urls_still_blocks_untrusted_domain_with_reserved_resolution(self) -> None:
+        with mock.patch.object(web_app, "hostname_resolves_to_unsafe_ip", return_value=True):
+            with self.assertRaisesRegex(ValueError, "Web 面板不允许访问本机、内网、保留网段或云元数据地址。"):
+                web_app.validate_web_start_urls(["https://example.com/video/test"])
+
+    def test_map_runtime_path_to_host_maps_container_download_paths(self) -> None:
+        with mock.patch.object(web_app, "running_in_container", return_value=True), mock.patch.object(
+            web_app, "HOST_DOWNLOADS_DIR", "./docker-data/downloads"
+        ), mock.patch.object(web_app, "DOWNLOAD_ROOT_DIR", "/downloads"):
+            self.assertEqual(
+                web_app.map_runtime_path_to_host("/downloads/demo/video.mp4"),
+                "./docker-data/downloads/demo/video.mp4",
+            )
+            self.assertEqual(
+                web_app.map_runtime_path_to_host("/downloads"),
+                "./docker-data/downloads",
+            )
+
+    def test_map_runtime_path_to_host_returns_original_path_outside_container(self) -> None:
+        with mock.patch.object(web_app, "running_in_container", return_value=False):
+            self.assertEqual(
+                web_app.map_runtime_path_to_host("/Users/mac/Downloads/demo.mp4"),
+                "/Users/mac/Downloads/demo.mp4",
+            )
 
     def test_collect_url_inputs_extracts_multiple_urls_from_share_blocks(self) -> None:
         shared_text = """
@@ -153,6 +261,36 @@ class SubtitleParsingTests(unittest.TestCase):
 
         self.assertEqual(urls, ["https://v.douyin.com/iABCDE12/"])
 
+    def test_collect_url_inputs_accepts_generic_bare_url(self) -> None:
+        urls = web_app.collect_url_inputs("请处理这个链接 vimeo.com/123456789")
+        self.assertEqual(urls, ["https://vimeo.com/123456789"])
+
+    def test_collect_url_inputs_prefers_supported_video_urls_over_noise_links(self) -> None:
+        share_text = """
+        复制这段内容，打开「幕库」看看【示例视频】：
+        https://www.bilibili.com/video/BV14PXKBbEhy/?share_source=copy_web
+        下载 App:
+        https://example.com/app-download
+        """.strip()
+
+        urls = web_app.collect_url_inputs(share_text)
+
+        self.assertEqual(
+            urls,
+            ["https://www.bilibili.com/video/BV14PXKBbEhy/?share_source=copy_web"],
+        )
+
+    def test_collect_url_inputs_extracts_supported_url_from_wrapped_share_link(self) -> None:
+        share_text = (
+            "这是一个包装分享链接："
+            "https://share.example.com/jump?target="
+            "https%3A%2F%2Fwww.youtube.com%2Fwatch%3Fv%3Dabcdefghijk%26feature%3Dshare"
+        )
+
+        urls = web_app.collect_url_inputs(share_text)
+
+        self.assertEqual(urls, ["https://www.youtube.com/watch?v=abcdefghijk&feature=share"])
+
     def test_subtitle_language_rank_prioritizes_bilibili_ai_zh(self) -> None:
         self.assertIn("ai-zh", web_app.SUBTITLE_LANGUAGES)
         self.assertLess(
@@ -181,6 +319,87 @@ class SubtitleParsingTests(unittest.TestCase):
         self.assertEqual([candidate["lang"] for candidate in candidates], ["ai-zh"])
         self.assertEqual(candidates[0]["ext"], "srt")
         self.assertEqual(candidates[0]["source"], "automatic captions")
+
+    def test_parse_endpoint_returns_preview_for_share_text(self) -> None:
+        share_text = """
+        快看这个视频：
+        https://www.youtube.com/watch?v=abcdefghijk
+        """.strip()
+        preview_info = {
+            "id": "abcdefghijk",
+            "title": "示例视频",
+            "uploader": "酸老师",
+            "duration": 125,
+            "thumbnail": "https://example.com/thumb.jpg",
+            "webpage_url": "https://www.youtube.com/watch?v=abcdefghijk",
+            "extractor_key": "Youtube",
+            "subtitles": {"zh-Hans": [{"ext": "vtt"}]},
+            "automatic_captions": {"en": [{"ext": "vtt"}]},
+        }
+
+        ydl_instance = mock.Mock()
+        ydl_instance.extract_info.return_value = preview_info
+        ydl_class = mock.MagicMock()
+        ydl_class.return_value.__enter__.return_value = ydl_instance
+
+        with web_app.app.test_client() as client, mock.patch.object(web_app.yt_dlp, "YoutubeDL", ydl_class):
+            response = client.post(
+                "/api/parse",
+                json={
+                    "url": share_text,
+                    "use_cookies": False,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["count"], 1)
+        self.assertEqual(payload["urls"], ["https://www.youtube.com/watch?v=abcdefghijk"])
+        item = payload["items"][0]
+        self.assertTrue(item["ok"])
+        self.assertEqual(item["platform"], "YouTube")
+        self.assertEqual(item["title"], "示例视频")
+        self.assertEqual(item["source_author"], "酸老师")
+        self.assertEqual(item["duration_label"], "2:05")
+        self.assertEqual(item["thumbnail"], "https://example.com/thumb.jpg")
+        self.assertEqual(item["subtitles"]["preferred_language"], "zh-Hans")
+        self.assertEqual(item["subtitles"]["preferred_source"], "manual")
+        self.assertEqual(item["recommended"]["transcript_route"], "direct_subtitles")
+        ydl_instance.extract_info.assert_called_once_with(
+            "https://www.youtube.com/watch?v=abcdefghijk",
+            download=False,
+        )
+
+    def test_parse_endpoint_humanizes_preview_error(self) -> None:
+        ydl_instance = mock.Mock()
+        ydl_instance.extract_info.side_effect = RuntimeError("Sign in to confirm you're not a bot")
+        ydl_class = mock.MagicMock()
+        ydl_class.return_value.__enter__.return_value = ydl_instance
+
+        with web_app.app.test_client() as client, mock.patch.object(web_app.yt_dlp, "YoutubeDL", ydl_class), mock.patch.object(
+            web_app,
+            "YOUTUBE_COOKIES_FROM_BROWSER",
+            "",
+        ), mock.patch.object(web_app, "YOUTUBE_COOKIES_PATH", ""), mock.patch.object(
+            web_app,
+            "COOKIES_FROM_BROWSER",
+            "",
+        ), mock.patch.object(web_app, "COOKIES_PATH", ""):
+            response = client.post(
+                "/api/parse",
+                json={
+                    "url": "https://www.youtube.com/watch?v=abcdefghijk",
+                    "use_cookies": False,
+                },
+            )
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        item = payload["items"][0]
+        self.assertFalse(item["ok"])
+        self.assertEqual(item["platform"], "YouTube")
+        self.assertIn("YOUTUBE_COOKIES_FROM_BROWSER=chrome", item["error"])
+        self.assertFalse(item["auth"]["configured"])
 
     def test_start_rejects_obvious_non_url_input(self) -> None:
         with web_app.jobs_lock:
@@ -383,27 +602,27 @@ class SubtitleParsingTests(unittest.TestCase):
             self.assertEqual(job.knowledge_path, str(artifact_paths["knowledge_path"]))
             self.assertIsNone(job.knowledge_error)
 
-    def test_resolve_cookie_options_prefers_youtube_specific_browser_auth(self) -> None:
+    def test_resolve_cookie_options_prefers_youtube_specific_cookie_file_over_browser_auth(self) -> None:
         with mock.patch.object(web_app, "YOUTUBE_COOKIES_FROM_BROWSER", "chrome"), mock.patch.object(
-            web_app, "YOUTUBE_COOKIES_PATH", ""
+            web_app, "YOUTUBE_COOKIES_PATH", "/tmp/youtube.cookies.txt"
         ), mock.patch.object(web_app, "COOKIES_FROM_BROWSER", ""), mock.patch.object(
             web_app, "COOKIES_PATH", "/tmp/bilibili.cookies.txt"
         ):
             options = web_app.resolve_cookie_options("https://www.youtube.com/watch?v=abcdefghijk")
 
-        self.assertEqual(options["cookiesfrombrowser"], ("chrome", None, None, None))
-        self.assertNotIn("cookiefile", options)
+        self.assertEqual(options["cookiefile"], "/tmp/youtube.cookies.txt")
+        self.assertNotIn("cookiesfrombrowser", options)
 
-    def test_resolve_cookie_options_prefers_douyin_specific_browser_auth(self) -> None:
+    def test_resolve_cookie_options_prefers_douyin_specific_cookie_file_over_browser_auth(self) -> None:
         with mock.patch.object(web_app, "DOUYIN_COOKIES_FROM_BROWSER", "chrome"), mock.patch.object(
-            web_app, "DOUYIN_COOKIES_PATH", ""
+            web_app, "DOUYIN_COOKIES_PATH", "/tmp/douyin.cookies.txt"
         ), mock.patch.object(web_app, "COOKIES_FROM_BROWSER", ""), mock.patch.object(
             web_app, "COOKIES_PATH", "/tmp/global.cookies.txt"
         ):
             options = web_app.resolve_cookie_options("https://www.douyin.com/video/1234567890")
 
-        self.assertEqual(options["cookiesfrombrowser"], ("chrome", None, None, None))
-        self.assertNotIn("cookiefile", options)
+        self.assertEqual(options["cookiefile"], "/tmp/douyin.cookies.txt")
+        self.assertNotIn("cookiesfrombrowser", options)
 
     def test_humanize_ydlp_error_for_youtube_auth_failure(self) -> None:
         job = web_app.Job(
@@ -1228,6 +1447,10 @@ class TranscriptRoutingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_dir = Path(temp_dir) / "config"
             download_dir = Path(temp_dir) / "downloads"
+            generic_cookies = Path(temp_dir) / "cookies.txt"
+            generic_cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+            douyin_cookies = Path(temp_dir) / "douyin.cookies.txt"
+            douyin_cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
 
             with mock.patch.dict(
                 web_app.os.environ,
@@ -1239,6 +1462,10 @@ class TranscriptRoutingTests(unittest.TestCase):
                         "/api/settings",
                         json={
                             "download_dir": str(download_dir),
+                            "cookies_path": str(generic_cookies),
+                            "cookies_from_browser": "chrome:Profile 1",
+                            "douyin_cookies_path": str(douyin_cookies),
+                            "douyin_cookies_from_browser": "chrome",
                             "openrouter_transcription_model": "openai/mock-transcribe",
                             "enable_ai_cleanup": True,
                             "ai_cleanup_prompt_text": "清洗提示词",
@@ -1255,7 +1482,15 @@ class TranscriptRoutingTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 200)
         self.assertEqual(payload["download_dir"], str(download_dir.resolve()))
+        self.assertEqual(payload["cookies_path"], str(generic_cookies.resolve()))
+        self.assertEqual(payload["cookies_from_browser"], "chrome:Profile 1")
+        self.assertEqual(payload["douyin_cookies_path"], str(douyin_cookies.resolve()))
+        self.assertEqual(payload["douyin_cookies_from_browser"], "chrome")
+        self.assertTrue(payload["generic_auth_verified"])
+        self.assertTrue(payload["douyin_auth_verified"])
         self.assertEqual(payload["ai_cleanup_prompt_source"], "inline")
+        self.assertEqual(saved["cookies_path"], str(generic_cookies.resolve()))
+        self.assertEqual(saved["douyin_cookies_path"], str(douyin_cookies.resolve()))
         self.assertEqual(saved["knowledge_draft_prompt_text"], "知识库提示词")
 
     def test_settings_api_masks_secrets_and_preserves_omitted_secret_fields(self) -> None:
@@ -1343,6 +1578,77 @@ class TranscriptRoutingTests(unittest.TestCase):
         self.assertEqual(payload["videoPreset"], web_app.VIDEO_PRESET_NAME)
         self.assertEqual(payload["audioPreset"], web_app.AUDIO_PRESET_NAME)
         self.assertEqual(payload["transcriptPreset"], web_app.TRANSCRIPT_PRESET_NAME)
+
+    def test_current_runtime_settings_exposes_host_download_dir_and_job_state_path(self) -> None:
+        with mock.patch.object(web_app, "HOST_DOWNLOADS_DIR", "/Users/mac/Downloads/muku"), mock.patch.object(
+            web_app, "RESUME_WEB_JOBS", True
+        ), mock.patch.object(
+            web_app, "COOKIES_PATH", "/tmp/cookies.txt"
+        ), mock.patch.object(
+            web_app, "DOUYIN_COOKIES_PATH", "/tmp/douyin.cookies.txt"
+        ):
+            settings = web_app.current_runtime_settings()
+
+        self.assertEqual(settings["host_downloads_dir"], "/Users/mac/Downloads/muku")
+        self.assertTrue(settings["resume_web_jobs"])
+        self.assertTrue(settings["web_jobs_state_path"].endswith("web-jobs.json"))
+        self.assertEqual(settings["cookies_path"], "/tmp/cookies.txt")
+        self.assertEqual(settings["douyin_cookies_path"], "/tmp/douyin.cookies.txt")
+
+    def test_initialize_web_jobs_restores_pending_jobs_and_submits_resume(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_dir = Path(temp_dir) / "config"
+            state_path = config_dir / "web-jobs.json"
+            config_dir.mkdir(parents=True, exist_ok=True)
+            state_path.write_text(
+                json.dumps(
+                    {
+                        "jobs": [
+                            {
+                                "job_id": "resume-me",
+                                "url": "https://example.com/video",
+                                "preset": web_app.AUDIO_PRESET_NAME,
+                                "use_cookies": False,
+                                "generate_transcript": False,
+                                "generate_knowledge": False,
+                                "output_dir": str(Path(temp_dir) / "downloads"),
+                                "created_at": 123.0,
+                                "title": "Old title",
+                                "status": "47%",
+                                "progress": 47,
+                                "done": False,
+                            }
+                        ]
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+
+            with mock.patch.dict(
+                web_app.os.environ,
+                {"VIDEO_DOWNLOADE_CONFIG_DIR": str(config_dir)},
+                clear=False,
+            ), mock.patch.object(web_app, "RESUME_WEB_JOBS", True), mock.patch.object(
+                web_app.executor, "submit", return_value=None
+            ) as submit_mock:
+                with web_app.jobs_lock:
+                    web_app.jobs.clear()
+                original_flag = web_app.web_jobs_initialized
+                web_app.web_jobs_initialized = False
+                try:
+                    web_app.initialize_web_jobs()
+                    restored = web_app.jobs["resume-me"]
+                finally:
+                    with web_app.jobs_lock:
+                        web_app.jobs.clear()
+                    web_app.web_jobs_initialized = original_flag
+
+        self.assertEqual(restored.status, "Resuming after restart...")
+        self.assertTrue(restored.resumed_from_state)
+        submit_mock.assert_called_once()
 
     def test_api_requires_web_token_when_configured(self) -> None:
         with web_app.app.test_client() as client, mock.patch.object(web_app, "WEB_TOKEN", "secret-token"):
@@ -1616,6 +1922,36 @@ class TranscriptRoutingTests(unittest.TestCase):
         self.assertEqual(payload["tasks"][0]["raw_path"], job.raw_path)
         self.assertEqual(payload["tasks"][0]["article_path"], job.article_path)
         self.assertEqual(payload["tasks"][0]["metadata_path"], job.metadata_path)
+
+    def test_tasks_endpoint_uses_host_default_download_dir_when_output_dir_is_blank(self) -> None:
+        job = web_app.Job(
+            job_id="job-host-default",
+            url="https://www.bilibili.com/video/BV1M15Q6eEhL/",
+            preset=web_app.VIDEO_PRESET_NAME,
+            use_cookies=False,
+            generate_transcript=False,
+        )
+        job.status = "Done"
+        job.done = True
+
+        with web_app.jobs_lock:
+            web_app.jobs.clear()
+            web_app.jobs[job.job_id] = job
+
+        try:
+            with web_app.app.test_client() as client, mock.patch.object(
+                web_app, "running_in_container", return_value=True
+            ), mock.patch.object(web_app, "DOWNLOAD_DIR", "/downloads"), mock.patch.object(
+                web_app, "DOWNLOAD_ROOT_DIR", "/downloads"
+            ), mock.patch.object(web_app, "HOST_DOWNLOADS_DIR", "/Users/mac/Downloads"):
+                response = client.get("/api/tasks")
+        finally:
+            with web_app.jobs_lock:
+                web_app.jobs.clear()
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.get_json()
+        self.assertEqual(payload["tasks"][0]["host_output_dir"], "/Users/mac/Downloads")
 
     def test_task_artifact_preview_endpoint_returns_transcript_content(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

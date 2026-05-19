@@ -17,7 +17,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from functools import wraps
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, unquote, urlparse
 
 from flask import Flask, jsonify, render_template, request
 
@@ -106,6 +106,7 @@ except ImportError:
 load_env_file()
 
 APP_DIR = Path(__file__).resolve().parent
+REPO_ROOT = APP_DIR.parent
 STATIC_DIR = APP_DIR / "static"
 TEMPLATE_DIR = APP_DIR / "templates"
 
@@ -122,16 +123,38 @@ def env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _default_cookie_search_roots() -> tuple[Path, ...]:
+    return (
+        REPO_ROOT / "cookies",
+        Path("/cookies"),
+    )
+
+
+def _autodetect_cookie_path(filename: str) -> str:
+    for root in _default_cookie_search_roots():
+        candidate = (root / filename).expanduser()
+        if candidate.exists():
+            return str(candidate.resolve())
+    return ""
+
+
 APP_TITLE = "幕库 Muku"
 DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", str(Path.home() / "Downloads"))
 DOWNLOAD_ROOT_DIR = os.environ.get("DOWNLOAD_ROOT_DIR", "").strip()
-COOKIES_PATH = os.environ.get("COOKIES_PATH", "")
+HOST_DOWNLOADS_DIR = os.environ.get("HOST_DOWNLOADS_DIR", "").strip()
+COOKIES_PATH = os.environ.get("COOKIES_PATH", "").strip() or _autodetect_cookie_path("cookies.txt")
 COOKIES_FROM_BROWSER = os.environ.get("COOKIES_FROM_BROWSER", "").strip()
-YOUTUBE_COOKIES_PATH = os.environ.get("YOUTUBE_COOKIES_PATH", "").strip()
+YOUTUBE_COOKIES_PATH = os.environ.get("YOUTUBE_COOKIES_PATH", "").strip() or _autodetect_cookie_path(
+    "youtube.cookies.txt"
+)
 YOUTUBE_COOKIES_FROM_BROWSER = os.environ.get("YOUTUBE_COOKIES_FROM_BROWSER", "").strip()
-BILIBILI_COOKIES_PATH = os.environ.get("BILIBILI_COOKIES_PATH", "").strip()
+BILIBILI_COOKIES_PATH = os.environ.get("BILIBILI_COOKIES_PATH", "").strip() or _autodetect_cookie_path(
+    "bilibili.cookies.txt"
+)
 BILIBILI_COOKIES_FROM_BROWSER = os.environ.get("BILIBILI_COOKIES_FROM_BROWSER", "").strip()
-DOUYIN_COOKIES_PATH = os.environ.get("DOUYIN_COOKIES_PATH", "").strip()
+DOUYIN_COOKIES_PATH = os.environ.get("DOUYIN_COOKIES_PATH", "").strip() or _autodetect_cookie_path(
+    "douyin.cookies.txt"
+)
 DOUYIN_COOKIES_FROM_BROWSER = os.environ.get("DOUYIN_COOKIES_FROM_BROWSER", "").strip()
 YTDLP_REMOTE_COMPONENTS = tuple(
     component.strip()
@@ -141,6 +164,7 @@ YTDLP_REMOTE_COMPONENTS = tuple(
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "2"))
 HOST = os.environ.get("HOST", "127.0.0.1")
 PORT = int(os.environ.get("PORT", "8080"))
+RESUME_WEB_JOBS = env_bool("MUKU_RESUME_JOBS", False)
 WEB_TOKEN = os.environ.get("MUKU_WEB_TOKEN", "").strip()
 WEB_TOKEN_HEADER = "X-Muku-Web-Token"
 MAX_START_URLS = max(1, int(os.environ.get("MAX_START_URLS", "50")))
@@ -238,6 +262,14 @@ ARTIFACT_PREVIEW_FIELDS: dict[str, dict[str, str]] = {
 
 ENV_DEFAULTS = {
     "download_dir": DOWNLOAD_DIR,
+    "cookies_path": COOKIES_PATH,
+    "cookies_from_browser": COOKIES_FROM_BROWSER,
+    "youtube_cookies_path": YOUTUBE_COOKIES_PATH,
+    "youtube_cookies_from_browser": YOUTUBE_COOKIES_FROM_BROWSER,
+    "bilibili_cookies_path": BILIBILI_COOKIES_PATH,
+    "bilibili_cookies_from_browser": BILIBILI_COOKIES_FROM_BROWSER,
+    "douyin_cookies_path": DOUYIN_COOKIES_PATH,
+    "douyin_cookies_from_browser": DOUYIN_COOKIES_FROM_BROWSER,
     "openrouter_base_url": OPENROUTER_BASE_URL,
     "openrouter_api_key": openrouter_backend.OPENROUTER_API_KEY,
     "openrouter_site_url": OPENROUTER_SITE_URL,
@@ -276,9 +308,8 @@ LEGACY_APP_TITLES = {"Downloader by Qianzhu"}
 BARE_URL_CANDIDATE_RE = re.compile(
     r"""(?ix)
     \b(
-        (?:www\.)?(?:youtube\.com|youtu\.be|bilibili\.com|b23\.tv|douyin\.com)/
-        |v\.douyin\.com/
-    )\S+
+        (?:www\.)?(?:[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?\.)+[a-z]{2,63}/[^\s<>"']+
+    )
     """
 )
 UNSAFE_WEB_HOSTNAMES = {
@@ -296,6 +327,16 @@ UNSAFE_WEB_HOST_SUFFIXES = (
     ".localdomain",
     ".ec2.internal",
 )
+TRUSTED_WEB_HOST_SUFFIXES = (
+    "bilibili.com",
+    "b23.tv",
+    "youtube.com",
+    "youtu.be",
+    "douyin.com",
+    "v.douyin.com",
+    "iesdouyin.com",
+)
+SUPPORTED_SHARE_HOST_SUFFIXES = TRUSTED_WEB_HOST_SUFFIXES
 
 
 @dataclass
@@ -325,6 +366,8 @@ class Job:
     source_author: str | None = None
     knowledge_error: str | None = None
     backend_error: str | None = None
+    resumed_from_state: bool = False
+    last_persist_at: float = field(default=0.0, repr=False)
     lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
 
 
@@ -336,6 +379,37 @@ app = Flask(
 jobs: dict[str, Job] = {}
 jobs_lock = threading.Lock()
 executor = ThreadPoolExecutor(max_workers=MAX_WORKERS)
+web_jobs_initialized = False
+
+JOB_STATE_FILENAME = "web-jobs.json"
+JOB_PERSIST_FIELDS = (
+    "job_id",
+    "url",
+    "preset",
+    "use_cookies",
+    "generate_transcript",
+    "generate_knowledge",
+    "output_dir",
+    "created_at",
+    "title",
+    "status",
+    "progress",
+    "done",
+    "error",
+    "artifact_dir",
+    "download_path",
+    "raw_path",
+    "article_path",
+    "transcript_path",
+    "knowledge_path",
+    "metadata_path",
+    "provider",
+    "transcript_route",
+    "source_author",
+    "knowledge_error",
+    "backend_error",
+    "resumed_from_state",
+)
 
 
 def frontend_asset_version() -> int:
@@ -346,6 +420,133 @@ def frontend_asset_version() -> int:
     )
     versions = [int(path.stat().st_mtime) for path in candidates if path.exists()]
     return max(versions, default=1)
+
+
+def web_jobs_state_path() -> Path:
+    return settings_config_dir() / JOB_STATE_FILENAME
+
+
+def serialize_job(job: Job) -> dict[str, object]:
+    return {field_name: getattr(job, field_name) for field_name in JOB_PERSIST_FIELDS}
+
+
+def deserialize_job(payload: dict[str, object]) -> Job:
+    job = Job(
+        job_id=str(payload.get("job_id") or uuid.uuid4().hex),
+        url=str(payload.get("url") or ""),
+        preset=str(payload.get("preset") or VIDEO_PRESET_NAME),
+        use_cookies=bool(payload.get("use_cookies")),
+        generate_transcript=bool(payload.get("generate_transcript")),
+        generate_knowledge=bool(payload.get("generate_knowledge")),
+        output_dir=str(payload.get("output_dir") or "").strip() or None,
+        created_at=float(payload.get("created_at") or time.time()),
+    )
+    for field_name in JOB_PERSIST_FIELDS:
+        if field_name in {
+            "job_id",
+            "url",
+            "preset",
+            "use_cookies",
+            "generate_transcript",
+            "generate_knowledge",
+            "output_dir",
+            "created_at",
+        }:
+            continue
+        setattr(job, field_name, payload.get(field_name))
+    try:
+        job.progress = float(payload.get("progress") or 0.0)
+    except (TypeError, ValueError):
+        job.progress = 0.0
+    job.done = bool(payload.get("done"))
+    job.resumed_from_state = bool(payload.get("resumed_from_state"))
+    return job
+
+
+def load_persisted_jobs() -> dict[str, Job]:
+    path = web_jobs_state_path()
+    if not path.exists():
+        return {}
+
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+    raw_jobs = payload.get("jobs") if isinstance(payload, dict) else None
+    if not isinstance(raw_jobs, list):
+        return {}
+
+    restored: dict[str, Job] = {}
+    for item in raw_jobs:
+        if not isinstance(item, dict):
+            continue
+        job = deserialize_job(item)
+        restored[job.job_id] = job
+    return restored
+
+
+def save_jobs_state() -> Path:
+    path = web_jobs_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
+    with jobs_lock:
+        payload = {
+            "saved_at": time.time(),
+            "jobs": [serialize_job(job) for job in sorted(jobs.values(), key=lambda item: item.created_at, reverse=True)[:200]],
+        }
+    temp_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    temp_path.replace(path)
+    return path
+
+
+def persist_jobs_state(*, force: bool = False) -> None:
+    now = time.time()
+    if not force:
+        should_save = False
+        with jobs_lock:
+            for job in jobs.values():
+                with job.lock:
+                    if now - job.last_persist_at >= 1.0:
+                        job.last_persist_at = now
+                        should_save = True
+        if not should_save:
+            return
+    else:
+        with jobs_lock:
+            for job in jobs.values():
+                with job.lock:
+                    job.last_persist_at = now
+    save_jobs_state()
+
+
+def maybe_resume_job(job: Job) -> None:
+    if job.done:
+        return
+    with job.lock:
+        job.status = "Resuming after restart..."
+        job.error = None
+        job.backend_error = None
+        job.resumed_from_state = True
+    executor.submit(worker, job.job_id)
+
+
+def initialize_web_jobs() -> None:
+    global web_jobs_initialized
+    if web_jobs_initialized:
+        return
+
+    restored_jobs = load_persisted_jobs()
+    with jobs_lock:
+        if restored_jobs:
+            jobs.update(restored_jobs)
+        web_jobs_initialized = True
+
+    if RESUME_WEB_JOBS:
+        for job in restored_jobs.values():
+            maybe_resume_job(job)
+    if restored_jobs:
+        persist_jobs_state(force=True)
 
 
 def load_inline_frontend_assets() -> dict[str, str]:
@@ -420,6 +621,18 @@ def _normalize_runtime_settings(payload: dict, *, partial: bool) -> dict:
         "knowledge_draft_api_key",
         "knowledge_draft_model",
     }
+    path_fields = {
+        "cookies_path",
+        "youtube_cookies_path",
+        "bilibili_cookies_path",
+        "douyin_cookies_path",
+    }
+    browser_spec_fields = {
+        "cookies_from_browser",
+        "youtube_cookies_from_browser",
+        "bilibili_cookies_from_browser",
+        "douyin_cookies_from_browser",
+    }
     bool_fields = {
         "enable_ai_cleanup",
         "enable_article_draft",
@@ -436,6 +649,19 @@ def _normalize_runtime_settings(payload: dict, *, partial: bool) -> dict:
         normalized["download_dir"] = str(resolve_download_dir(raw_value)) if raw_value else ""
     elif not partial:
         normalized["download_dir"] = ""
+
+    for field in path_fields:
+        if field in payload:
+            raw_value = str(payload.get(field) or "").strip()
+            normalized[field] = str(Path(raw_value).expanduser().resolve()) if raw_value else ""
+        elif not partial:
+            normalized[field] = ""
+
+    for field in browser_spec_fields:
+        if field in payload:
+            normalized[field] = str(payload.get(field) or "").strip()
+        elif not partial:
+            normalized[field] = ""
 
     for field in string_fields:
         if field in payload:
@@ -460,6 +686,10 @@ def _normalize_runtime_settings(payload: dict, *, partial: bool) -> dict:
 
 def apply_runtime_settings(saved_settings: dict | None = None) -> dict:
     global DOWNLOAD_DIR
+    global COOKIES_PATH, COOKIES_FROM_BROWSER
+    global YOUTUBE_COOKIES_PATH, YOUTUBE_COOKIES_FROM_BROWSER
+    global BILIBILI_COOKIES_PATH, BILIBILI_COOKIES_FROM_BROWSER
+    global DOUYIN_COOKIES_PATH, DOUYIN_COOKIES_FROM_BROWSER
     global OPENROUTER_BASE_URL, OPENROUTER_SITE_URL, OPENROUTER_APP_NAME
     global OPENROUTER_TRANSCRIPTION_MODEL, OPENROUTER_ARTICLE_MODEL
     global AI_CLEANUP_ENABLED, AI_CLEANUP_BASE_URL, AI_CLEANUP_MODEL
@@ -477,6 +707,14 @@ def apply_runtime_settings(saved_settings: dict | None = None) -> dict:
     DOWNLOAD_DIR = str(resolve_download_dir(download_value)) if download_value else str(
         resolve_download_dir(str(ENV_DEFAULTS["download_dir"]))
     )
+    COOKIES_PATH = str(value_for("cookies_path") or "").strip()
+    COOKIES_FROM_BROWSER = str(value_for("cookies_from_browser") or "").strip()
+    YOUTUBE_COOKIES_PATH = str(value_for("youtube_cookies_path") or "").strip()
+    YOUTUBE_COOKIES_FROM_BROWSER = str(value_for("youtube_cookies_from_browser") or "").strip()
+    BILIBILI_COOKIES_PATH = str(value_for("bilibili_cookies_path") or "").strip()
+    BILIBILI_COOKIES_FROM_BROWSER = str(value_for("bilibili_cookies_from_browser") or "").strip()
+    DOUYIN_COOKIES_PATH = str(value_for("douyin_cookies_path") or "").strip()
+    DOUYIN_COOKIES_FROM_BROWSER = str(value_for("douyin_cookies_from_browser") or "").strip()
 
     openrouter_backend.OPENROUTER_BASE_URL = str(value_for("openrouter_base_url") or "").strip()
     openrouter_backend.OPENROUTER_API_KEY = str(value_for("openrouter_api_key") or "").strip()
@@ -531,10 +769,21 @@ def current_runtime_settings() -> dict:
     return {
         "settings_path": str(settings_path()),
         "settings_dir": str(settings_config_dir()),
+        "web_jobs_state_path": str(web_jobs_state_path()),
         "runtime_environment": "container" if running_in_container() else "local",
         "download_dir": DOWNLOAD_DIR,
         "download_root_dir": str(download_root_path()) if download_root_path() else None,
         "download_root_locked": bool(download_root_path()),
+        "host_downloads_dir": HOST_DOWNLOADS_DIR or None,
+        "resume_web_jobs": RESUME_WEB_JOBS,
+        "cookies_path": COOKIES_PATH,
+        "cookies_from_browser": COOKIES_FROM_BROWSER,
+        "youtube_cookies_path": YOUTUBE_COOKIES_PATH,
+        "youtube_cookies_from_browser": YOUTUBE_COOKIES_FROM_BROWSER,
+        "bilibili_cookies_path": BILIBILI_COOKIES_PATH,
+        "bilibili_cookies_from_browser": BILIBILI_COOKIES_FROM_BROWSER,
+        "douyin_cookies_path": DOUYIN_COOKIES_PATH,
+        "douyin_cookies_from_browser": DOUYIN_COOKIES_FROM_BROWSER,
         "openrouter_base_url": openrouter_backend.OPENROUTER_BASE_URL,
         "openrouter_api_key": openrouter_backend.OPENROUTER_API_KEY,
         "openrouter_site_url": openrouter_backend.OPENROUTER_SITE_URL,
@@ -569,6 +818,31 @@ def current_runtime_settings() -> dict:
             "inline" if cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_TEXT.strip() else "file"
         ),
     }
+
+
+def map_runtime_path_to_host(path_value: str | None) -> str | None:
+    normalized = str(path_value or "").strip()
+    if not normalized:
+        return None
+
+    if not running_in_container():
+        return normalized
+
+    host_root = HOST_DOWNLOADS_DIR.strip()
+    download_root = DOWNLOAD_ROOT_DIR.strip().rstrip("/")
+    if not host_root or not download_root:
+        return None
+
+    if normalized == download_root:
+        return host_root
+
+    prefix = f"{download_root}/"
+    if not normalized.startswith(prefix):
+        return None
+
+    suffix = normalized[len(prefix) :].lstrip("/")
+    host_root = host_root.rstrip("/\\")
+    return f"{host_root}/{suffix}" if suffix else host_root
 
 
 def persist_runtime_settings(payload: dict, *, partial: bool = True) -> dict:
@@ -704,6 +978,7 @@ def set_job_state(job: Job, *, status: str | None = None, progress: float | None
             job.status = status
         if progress is not None:
             job.progress = progress
+    persist_jobs_state()
 
 
 def progress_hook(job: Job):
@@ -719,6 +994,7 @@ def progress_hook(job: Job):
                 ).strip()
                 if data.get("info_dict"):
                     job.title = data["info_dict"].get("title", job.title)
+            persist_jobs_state()
         elif data["status"] == "finished":
             with job.lock:
                 job.progress = 100
@@ -727,6 +1003,7 @@ def progress_hook(job: Job):
                     if job.generate_transcript
                     else "Download finished."
                 )
+            persist_jobs_state(force=True)
 
     return hook
 
@@ -750,12 +1027,6 @@ def _cookie_source_candidates(platform: str) -> tuple[dict[str, str], ...]:
     if platform == "YouTube":
         return (
             {
-                "kind": "browser",
-                "scope": "platform",
-                "config_key": "YOUTUBE_COOKIES_FROM_BROWSER",
-                "value": YOUTUBE_COOKIES_FROM_BROWSER,
-            },
-            {
                 "kind": "file",
                 "scope": "platform",
                 "config_key": "YOUTUBE_COOKIES_PATH",
@@ -763,15 +1034,21 @@ def _cookie_source_candidates(platform: str) -> tuple[dict[str, str], ...]:
             },
             {
                 "kind": "browser",
-                "scope": "global",
-                "config_key": "COOKIES_FROM_BROWSER",
-                "value": COOKIES_FROM_BROWSER,
+                "scope": "platform",
+                "config_key": "YOUTUBE_COOKIES_FROM_BROWSER",
+                "value": YOUTUBE_COOKIES_FROM_BROWSER,
             },
             {
                 "kind": "file",
                 "scope": "global",
                 "config_key": "COOKIES_PATH",
                 "value": COOKIES_PATH,
+            },
+            {
+                "kind": "browser",
+                "scope": "global",
+                "config_key": "COOKIES_FROM_BROWSER",
+                "value": COOKIES_FROM_BROWSER,
             },
         )
     if platform == "Bilibili":
@@ -804,12 +1081,6 @@ def _cookie_source_candidates(platform: str) -> tuple[dict[str, str], ...]:
     if platform == "Douyin":
         return (
             {
-                "kind": "browser",
-                "scope": "platform",
-                "config_key": "DOUYIN_COOKIES_FROM_BROWSER",
-                "value": DOUYIN_COOKIES_FROM_BROWSER,
-            },
-            {
                 "kind": "file",
                 "scope": "platform",
                 "config_key": "DOUYIN_COOKIES_PATH",
@@ -817,15 +1088,21 @@ def _cookie_source_candidates(platform: str) -> tuple[dict[str, str], ...]:
             },
             {
                 "kind": "browser",
-                "scope": "global",
-                "config_key": "COOKIES_FROM_BROWSER",
-                "value": COOKIES_FROM_BROWSER,
+                "scope": "platform",
+                "config_key": "DOUYIN_COOKIES_FROM_BROWSER",
+                "value": DOUYIN_COOKIES_FROM_BROWSER,
             },
             {
                 "kind": "file",
                 "scope": "global",
                 "config_key": "COOKIES_PATH",
                 "value": COOKIES_PATH,
+            },
+            {
+                "kind": "browser",
+                "scope": "global",
+                "config_key": "COOKIES_FROM_BROWSER",
+                "value": COOKIES_FROM_BROWSER,
             },
         )
     return (
@@ -857,24 +1134,6 @@ def _format_browser_cookie_source(spec: str) -> str:
 
 
 def platform_auth_state(platform: str) -> dict[str, object]:
-    if platform == "Unknown":
-        states = {
-            key: platform_auth_state(platform_name)
-            for key, platform_name in PLATFORM_AUTH_ORDER
-        }
-        return {
-            "platform": platform,
-            "configured": any(bool(state["configured"]) for state in states.values()),
-            "verified": any(bool(state["verified"]) for state in states.values()),
-            "status": "verified"
-            if any(bool(state["verified"]) for state in states.values())
-            else "configured_only"
-            if any(bool(state["configured"]) for state in states.values())
-            else "missing",
-            "runtime_environment": "container" if running_in_container() else "local",
-            "platforms": states,
-        }
-
     selected = next(
         (candidate for candidate in _cookie_source_candidates(platform) if str(candidate["value"]).strip()),
         None,
@@ -955,14 +1214,14 @@ def resolve_cookie_options(url: str) -> dict:
     platform = detect_platform(url)
 
     if platform == "YouTube":
-        if YOUTUBE_COOKIES_FROM_BROWSER:
-            return {"cookiesfrombrowser": parse_cookies_from_browser_spec(YOUTUBE_COOKIES_FROM_BROWSER)}
         if YOUTUBE_COOKIES_PATH:
             return {"cookiefile": YOUTUBE_COOKIES_PATH}
-        if COOKIES_FROM_BROWSER:
-            return {"cookiesfrombrowser": parse_cookies_from_browser_spec(COOKIES_FROM_BROWSER)}
+        if YOUTUBE_COOKIES_FROM_BROWSER:
+            return {"cookiesfrombrowser": parse_cookies_from_browser_spec(YOUTUBE_COOKIES_FROM_BROWSER)}
         if COOKIES_PATH:
             return {"cookiefile": COOKIES_PATH}
+        if COOKIES_FROM_BROWSER:
+            return {"cookiesfrombrowser": parse_cookies_from_browser_spec(COOKIES_FROM_BROWSER)}
         return {}
 
     if platform == "Bilibili":
@@ -977,14 +1236,14 @@ def resolve_cookie_options(url: str) -> dict:
         return {}
 
     if platform == "Douyin":
-        if DOUYIN_COOKIES_FROM_BROWSER:
-            return {"cookiesfrombrowser": parse_cookies_from_browser_spec(DOUYIN_COOKIES_FROM_BROWSER)}
         if DOUYIN_COOKIES_PATH:
             return {"cookiefile": DOUYIN_COOKIES_PATH}
-        if COOKIES_FROM_BROWSER:
-            return {"cookiesfrombrowser": parse_cookies_from_browser_spec(COOKIES_FROM_BROWSER)}
+        if DOUYIN_COOKIES_FROM_BROWSER:
+            return {"cookiesfrombrowser": parse_cookies_from_browser_spec(DOUYIN_COOKIES_FROM_BROWSER)}
         if COOKIES_PATH:
             return {"cookiefile": COOKIES_PATH}
+        if COOKIES_FROM_BROWSER:
+            return {"cookiesfrombrowser": parse_cookies_from_browser_spec(COOKIES_FROM_BROWSER)}
         return {}
 
     if COOKIES_FROM_BROWSER:
@@ -1060,6 +1319,7 @@ def build_ydl_options(job: Job, *, preset_name: str | None = None, base_dir: str
         "socket_timeout": 30,
         "retries": 3,
         "fragment_retries": 3,
+        "continuedl": True,
     }
 
     if "merge_output_format" in preset_conf:
@@ -1119,6 +1379,21 @@ def extract_source_author(info: dict | None) -> str | None:
         if isinstance(value, str) and value.strip():
             return value.strip()
     return None
+
+
+def format_duration_label(total_seconds: int | float | None) -> str | None:
+    if total_seconds is None:
+        return None
+    try:
+        seconds = max(0, int(total_seconds))
+    except (TypeError, ValueError):
+        return None
+
+    hours, remainder = divmod(seconds, 3600)
+    minutes, secs = divmod(remainder, 60)
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes}:{secs:02d}"
 
 
 def prepare_audio_for_transcription(audio_path: Path) -> Path:
@@ -1387,6 +1662,136 @@ def normalize_shared_url(candidate: str) -> str:
     return candidate.strip().rstrip(trailing_chars)
 
 
+def is_supported_share_url(url: str) -> bool:
+    parsed = urlparse(url)
+    hostname = (parsed.hostname or "").strip().rstrip(".").lower()
+    if not hostname:
+        return False
+    return any(hostname == suffix or hostname.endswith(f".{suffix}") for suffix in SUPPORTED_SHARE_HOST_SUFFIXES)
+
+
+def _hostname_platform_label(hostname: str) -> str:
+    normalized = hostname.strip().rstrip(".").lower()
+    if normalized.startswith("www."):
+        normalized = normalized[4:]
+    if not normalized:
+        return "Other"
+    if normalized in {"x.com", "twitter.com"}:
+        return "X"
+    return normalized
+
+
+def platform_label_for_url(url: str, info: dict | None = None) -> str:
+    detected = detect_platform(url)
+    if detected != "Unknown":
+        return detected
+
+    if isinstance(info, dict):
+        for key in ("extractor_key", "extractor"):
+            raw_value = info.get(key)
+            if not isinstance(raw_value, str):
+                continue
+            candidate = raw_value.strip()
+            if not candidate:
+                continue
+            lowered = candidate.lower()
+            if lowered in {"generic", "unknown"}:
+                continue
+            if lowered.startswith("twitter"):
+                return "X"
+            if lowered.startswith("youtube"):
+                return "YouTube"
+            if lowered.startswith("bilibili"):
+                return "Bilibili"
+            if lowered.startswith("douyin"):
+                return "Douyin"
+            if lowered.startswith("tiktok"):
+                return "TikTok"
+            if lowered.startswith("ted"):
+                return "TED"
+            if lowered.startswith("archiveorg") or lowered.startswith("archive.org"):
+                return "Archive.org"
+            return candidate.replace("_", " ").replace("-", " ")
+
+    parsed = urlparse(url)
+    hostname = parsed.hostname or ""
+    return _hostname_platform_label(hostname)
+
+
+def _remember_preferred_url(urls: list[str], seen: set[str], candidate: str) -> None:
+    cleaned = normalize_shared_url(candidate)
+    if not cleaned:
+        return
+    if cleaned in seen:
+        return
+
+    for index, existing in enumerate(urls):
+        if cleaned.startswith(existing) and len(cleaned) > len(existing) and cleaned[len(existing)] in {"&", "#"}:
+            seen.discard(existing)
+            urls[index] = cleaned
+            seen.add(cleaned)
+            return
+        if existing.startswith(cleaned) and len(existing) > len(cleaned) and existing[len(cleaned)] in {"&", "#"}:
+            return
+
+    urls.append(cleaned)
+    seen.add(cleaned)
+
+
+def _extract_supported_urls_from_candidate(candidate: str, *, max_depth: int = 2) -> list[str]:
+    normalized = normalize_shared_url(candidate)
+    if not normalized or max_depth < 0:
+        return []
+
+    supported: list[str] = []
+    seen: set[str] = set()
+
+    def remember(url: str) -> None:
+        _remember_preferred_url(supported, seen, url)
+
+    if is_supported_share_url(normalized):
+        remember(normalized)
+
+    if max_depth == 0:
+        return supported
+
+    decoded_candidate = unquote(normalized)
+    if decoded_candidate != normalized:
+        for extracted in extract_supported_urls_from_text(decoded_candidate, max_depth=max_depth - 1):
+            remember(extracted)
+
+    parsed = urlparse(normalized)
+    for _key, value in parse_qsl(parsed.query, keep_blank_values=True):
+        nested_value = normalize_shared_url(unquote(value))
+        if not nested_value:
+            continue
+        for extracted in extract_supported_urls_from_text(nested_value, max_depth=max_depth - 1):
+            remember(extracted)
+
+    return supported
+
+
+def extract_supported_urls_from_text(text: str, *, max_depth: int = 2) -> list[str]:
+    supported: list[str] = []
+    seen: set[str] = set()
+
+    def remember(url: str) -> None:
+        _remember_preferred_url(supported, seen, url)
+
+    for match in URL_CANDIDATE_RE.finditer(text):
+        for extracted in _extract_supported_urls_from_candidate(match.group(0), max_depth=max_depth):
+            remember(extracted)
+
+    for match in BARE_URL_CANDIDATE_RE.finditer(text):
+        candidate = normalize_shared_url(match.group(0))
+        if candidate and not candidate.startswith(("http://", "https://")):
+            candidate = f"https://{candidate}"
+        for extracted in _extract_supported_urls_from_candidate(candidate, max_depth=max_depth):
+            remember(extracted)
+
+    return supported
+
+
 def extract_urls_from_text(text: str) -> list[str]:
     urls: list[str] = []
     seen: set[str] = set()
@@ -1418,6 +1823,10 @@ def extract_bare_urls_from_text(text: str) -> list[str]:
 
 
 def collect_url_inputs(text: str) -> list[str]:
+    supported_urls = extract_supported_urls_from_text(text)
+    if supported_urls:
+        return supported_urls
+
     urls = extract_urls_from_text(text)
     if urls:
         return urls
@@ -1478,6 +1887,13 @@ def hostname_resolves_to_unsafe_ip(hostname: str) -> bool:
     return saw_parseable_address
 
 
+def hostname_matches_trusted_web_suffix(hostname: str) -> bool:
+    return any(
+        hostname == suffix or hostname.endswith(f".{suffix}")
+        for suffix in TRUSTED_WEB_HOST_SUFFIXES
+    )
+
+
 def is_unsafe_web_url_target(url: str) -> bool:
     parsed = urlparse(url)
     if parsed.scheme.lower() not in {"http", "https"}:
@@ -1493,6 +1909,9 @@ def is_unsafe_web_url_target(url: str) -> bool:
     address = parse_relaxed_ip_address(hostname)
     if address is not None:
         return is_unsafe_ip_address(address)
+
+    if hostname_matches_trusted_web_suffix(hostname):
+        return False
 
     return hostname_resolves_to_unsafe_ip(hostname)
 
@@ -1514,7 +1933,12 @@ def build_artifact_base_path(info: dict, *, base_dir: str | Path | None = None) 
     return target_dir / stem / stem
 
 
-def build_subtitle_probe_options(job: Job, *, temp_dir: Path) -> dict:
+def build_subtitle_probe_options(
+    job: Job,
+    *,
+    temp_dir: Path,
+    subtitle_languages: list[str] | None = None,
+) -> dict:
     options = build_ydl_options(job, preset_name=AUDIO_PRESET_NAME, base_dir=temp_dir)
     options.pop("format", None)
     options.pop("postprocessors", None)
@@ -1523,7 +1947,8 @@ def build_subtitle_probe_options(job: Job, *, temp_dir: Path) -> dict:
     options["outtmpl"] = str(temp_dir / "subtitle-probe.%(ext)s")
     options["writesubtitles"] = True
     options["writeautomaticsub"] = True
-    options["subtitleslangs"] = ["all"]
+    requested_languages = [str(lang).strip() for lang in (subtitle_languages or SUBTITLE_LANGUAGES) if str(lang).strip()]
+    options["subtitleslangs"] = requested_languages or ["all"]
     options["subtitlesformat"] = SUBTITLE_FORMATS
     return options
 
@@ -1534,6 +1959,198 @@ def _subtitle_language_rank(lang: str) -> int:
         if lowered == preferred.lower():
             return index
     return len(SUBTITLE_LANGUAGES)
+
+
+def summarize_subtitle_availability(info: dict | None) -> dict[str, object]:
+    if not isinstance(info, dict):
+        return {
+            "available": False,
+            "manual_languages": [],
+            "automatic_languages": [],
+            "preferred_language": None,
+            "preferred_source": None,
+        }
+
+    manual_languages = sorted(
+        {
+            str(lang).strip()
+            for lang in (info.get("subtitles") or {}).keys()
+            if str(lang).strip()
+        },
+        key=_subtitle_language_rank,
+    )
+    automatic_languages = sorted(
+        {
+            str(lang).strip()
+            for lang in (info.get("automatic_captions") or {}).keys()
+            if str(lang).strip()
+        },
+        key=_subtitle_language_rank,
+    )
+
+    preferred_language = (
+        manual_languages[0]
+        if manual_languages
+        else automatic_languages[0]
+        if automatic_languages
+        else None
+    )
+    preferred_source = "manual" if manual_languages else "automatic" if automatic_languages else None
+    return {
+        "available": bool(manual_languages or automatic_languages),
+        "manual_languages": manual_languages,
+        "automatic_languages": automatic_languages,
+        "preferred_language": preferred_language,
+        "preferred_source": preferred_source,
+    }
+
+
+def select_subtitle_probe_languages(info: dict | None) -> list[str]:
+    summary = summarize_subtitle_availability(info)
+    preferred_language = summary.get("preferred_language")
+    if isinstance(preferred_language, str) and preferred_language.strip():
+        return [preferred_language.strip()]
+    return list(SUBTITLE_LANGUAGES)
+
+
+def build_transcript_recommendation(
+    *,
+    url: str,
+    use_cookies: bool,
+    auth_state: dict[str, object],
+    subtitle_summary: dict[str, object],
+) -> dict[str, object]:
+    platform = detect_platform(url)
+    subtitles_available = bool(subtitle_summary.get("available"))
+    if platform == "Douyin":
+        if use_cookies and bool(auth_state.get("configured")):
+            return {
+                "preset": TRANSCRIPT_PRESET_NAME,
+                "transcript_route": "douyin_audio_transcription",
+                "use_cookies_recommended": True,
+                "reason": "抖音更适合走专用 provider：先取音频，再进入逐字稿链路。",
+            }
+        return {
+            "preset": TRANSCRIPT_PRESET_NAME,
+            "transcript_route": "douyin_audio_transcription",
+            "use_cookies_recommended": True,
+            "reason": "抖音要想稳定处理，通常需要有效登录态；建议启用抖音 cookies 后再发起任务。",
+        }
+
+    if subtitles_available:
+        return {
+            "preset": TRANSCRIPT_PRESET_NAME,
+            "transcript_route": "direct_subtitles",
+            "use_cookies_recommended": bool(auth_state.get("configured")),
+            "reason": "当前信息显示平台可能提供字幕，优先直提字幕会更快也更稳。",
+        }
+
+    return {
+        "preset": TRANSCRIPT_PRESET_NAME,
+        "transcript_route": "subtitle_probe_fallback_to_audio",
+        "use_cookies_recommended": bool(auth_state.get("configured")),
+        "reason": "预计会先探测字幕；若没有可用字幕，再回退到音频转写。",
+    }
+
+
+def build_parse_preview_options(url: str, *, use_cookies: bool) -> dict:
+    preview_job = Job(
+        job_id="preview",
+        url=url,
+        preset=AUDIO_PRESET_NAME,
+        use_cookies=use_cookies,
+        generate_transcript=False,
+    )
+    options = build_ydl_options(
+        preview_job,
+        preset_name=AUDIO_PRESET_NAME,
+        base_dir=Path(tempfile.gettempdir()),
+    )
+    options["skip_download"] = True
+    options["progress_hooks"] = []
+    options["quiet"] = True
+    options["no_warnings"] = True
+    return options
+
+
+def select_thumbnail_url(info: dict | None) -> str | None:
+    if not isinstance(info, dict):
+        return None
+    thumbnail = info.get("thumbnail")
+    if isinstance(thumbnail, str) and thumbnail.strip():
+        return thumbnail.strip()
+    thumbnails = info.get("thumbnails") or []
+    for item in reversed(thumbnails):
+        url = item.get("url") if isinstance(item, dict) else None
+        if isinstance(url, str) and url.strip():
+            return url.strip()
+    return None
+
+
+def preview_source_url(url: str, *, use_cookies: bool) -> dict[str, object]:
+    platform = platform_label_for_url(url)
+    auth_state = platform_auth_state(platform)
+    preview_job = Job(
+        job_id="preview",
+        url=url,
+        preset=AUDIO_PRESET_NAME,
+        use_cookies=use_cookies,
+        generate_transcript=False,
+    )
+
+    try:
+        with yt_dlp.YoutubeDL(build_parse_preview_options(url, use_cookies=use_cookies)) as ydl:
+            info = primary_info_dict(ydl.extract_info(url, download=False))
+    except Exception as exc:
+        subtitle_summary = summarize_subtitle_availability(None)
+        return {
+            "ok": False,
+            "source_url": url,
+            "resolved_url": url,
+            "platform": platform,
+            "title": None,
+            "source_author": None,
+            "duration_seconds": None,
+            "duration_label": None,
+            "thumbnail": None,
+            "media_id": None,
+            "extractor": None,
+            "subtitles": subtitle_summary,
+            "auth": auth_state,
+            "recommended": build_transcript_recommendation(
+                url=url,
+                use_cookies=use_cookies,
+                auth_state=auth_state,
+                subtitle_summary=subtitle_summary,
+            ),
+            "error": humanize_ydlp_error(preview_job, str(exc)),
+        }
+
+    subtitle_summary = summarize_subtitle_availability(info)
+    duration_seconds = info.get("duration")
+    platform = platform_label_for_url(url, info)
+    return {
+        "ok": True,
+        "source_url": url,
+        "resolved_url": info.get("webpage_url") or info.get("original_url") or url,
+        "platform": platform,
+        "title": info.get("title") or url,
+        "source_author": extract_source_author(info),
+        "duration_seconds": duration_seconds,
+        "duration_label": format_duration_label(duration_seconds),
+        "thumbnail": select_thumbnail_url(info),
+        "media_id": info.get("id"),
+        "extractor": info.get("extractor_key") or info.get("extractor"),
+        "subtitles": subtitle_summary,
+        "auth": auth_state,
+        "recommended": build_transcript_recommendation(
+            url=url,
+            use_cookies=use_cookies,
+            auth_state=auth_state,
+            subtitle_summary=subtitle_summary,
+        ),
+        "error": None,
+    }
 
 
 def _collect_downloaded_subtitle_candidates(temp_dir: Path) -> list[dict]:
@@ -1681,7 +2298,24 @@ def try_extract_direct_subtitles(job: Job) -> dict | None:
     set_job_state(job, status="Checking platform subtitles...")
     temp_dir = Path(tempfile.mkdtemp(prefix="qianzhu-subs-"))
     try:
-        with yt_dlp.YoutubeDL(build_subtitle_probe_options(job, temp_dir=temp_dir)) as ydl:
+        preview_info = None
+        try:
+            with yt_dlp.YoutubeDL(build_parse_preview_options(job.url, use_cookies=job.use_cookies)) as preview_ydl:
+                preview_info = primary_info_dict(preview_ydl.extract_info(job.url, download=False))
+        except Exception:
+            preview_info = None
+
+        if preview_info is not None:
+            with job.lock:
+                job.title = preview_info.get("title", job.title)
+                job.source_author = extract_source_author(preview_info)
+            if not summarize_subtitle_availability(preview_info)["available"]:
+                return None
+
+        subtitle_languages = select_subtitle_probe_languages(preview_info)
+        with yt_dlp.YoutubeDL(
+            build_subtitle_probe_options(job, temp_dir=temp_dir, subtitle_languages=subtitle_languages)
+        ) as ydl:
             info = ydl.extract_info(job.url, download=True)
 
         if not isinstance(info, dict):
@@ -1846,6 +2480,7 @@ def run_knowledge_pipeline(
     if knowledge_path.exists():
         job.knowledge_path = str(knowledge_path)
         job.knowledge_error = None
+        persist_jobs_state(force=True)
         return
 
     set_job_state(job, status=f"Generating knowledge with {cleanup_backend.KNOWLEDGE_DRAFT_MODEL}...")
@@ -1878,6 +2513,7 @@ def run_knowledge_pipeline(
 
         job.knowledge_path = str(knowledge_path)
         job.knowledge_error = None
+        persist_jobs_state(force=True)
     except Exception as exc:
         metadata["knowledge_base_url"] = cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL
         metadata["knowledge_prompt_file"] = cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE
@@ -1887,6 +2523,7 @@ def run_knowledge_pipeline(
         metadata["knowledge_error"] = str(exc)
         write_metadata_file(artifact_paths["meta_path"], metadata)
         job.knowledge_error = str(exc)
+        persist_jobs_state(force=True)
 
 
 def run_text_pipeline(
@@ -1922,6 +2559,7 @@ def run_text_pipeline(
         job.knowledge_error = existing_metadata.get("knowledge_error")
 
         if not job.generate_knowledge or knowledge_path.exists():
+            persist_jobs_state(force=True)
             return
 
         existing_article_text = article_path.read_text(encoding="utf-8").strip() if article_path.exists() else None
@@ -2074,6 +2712,7 @@ def run_text_pipeline(
     attach_artifact_paths_to_job(job, artifact_paths)
     job.provider = transcript_provider
     job.transcript_route = metadata.get("transcript_route")
+    persist_jobs_state(force=True)
 
 
 def run_transcription_pipeline(job: Job, audio_path: Path, *, extra_meta: dict | None = None) -> None:
@@ -2178,6 +2817,7 @@ def download_media(job: Job, preset_name: str) -> Path:
                 job.download_path = str(media_path)
                 job.artifact_dir = str(result["artifact_dir"])
                 job.progress = 100
+            persist_jobs_state(force=True)
             return media_path
 
     options = build_ydl_options(job, preset_name=preset_name, base_dir=output_dir)
@@ -2207,6 +2847,7 @@ def download_media(job: Job, preset_name: str) -> Path:
     media_path = resolve_media_path(expected_path, preset_name)
     job.download_path = str(media_path)
     job.artifact_dir = str(media_path.parent)
+    persist_jobs_state(force=True)
     return media_path
 
 
@@ -2291,12 +2932,14 @@ def run_job(job: Job) -> Job:
                 job.status = "Done · transcript ready" if job.transcript_path else "Done"
             job.progress = 100
             job.backend_error = None
+        persist_jobs_state(force=True)
     except Exception as exc:
         with job.lock:
             job.done = True
             job.status = "Failed"
             raw_error = job.backend_error or str(exc)
             job.error = humanize_ydlp_error(job, raw_error)
+        persist_jobs_state(force=True)
     return job
 
 
@@ -2313,6 +2956,7 @@ def build_platform_auth_payload() -> dict[str, object]:
         key: platform_auth_state(platform_name)
         for key, platform_name in PLATFORM_AUTH_ORDER
     }
+    states["generic"] = platform_auth_state("Unknown")
     payload: dict[str, object] = {
         "runtime_environment": "container" if running_in_container() else "local",
         "cookiesConfigured": any(bool(state["configured"]) for state in states.values()),
@@ -2322,10 +2966,13 @@ def build_platform_auth_payload() -> dict[str, object]:
     for key, _platform_name in PLATFORM_AUTH_ORDER:
         payload[f"{key}AuthConfigured"] = bool(states[key]["configured"])
         payload[f"{key}AuthVerified"] = bool(states[key]["verified"])
+    payload["genericAuthConfigured"] = bool(states["generic"]["configured"])
+    payload["genericAuthVerified"] = bool(states["generic"]["verified"])
     return payload
 
 
 def frontend_config() -> dict:
+    initialize_web_jobs()
     settings = masked_runtime_settings()
     auth_payload = build_platform_auth_payload()
     return {
@@ -2365,11 +3012,14 @@ def index():
 @app.route("/api/settings")
 @require_web_token
 def get_settings():
+    initialize_web_jobs()
     payload = masked_runtime_settings()
     auth_payload = build_platform_auth_payload()
     payload.update(auth_payload)
     payload.update(
         {
+            "generic_auth_configured": auth_payload["genericAuthConfigured"],
+            "generic_auth_verified": auth_payload["genericAuthVerified"],
             "youtube_auth_configured": auth_payload["youtubeAuthConfigured"],
             "youtube_auth_verified": auth_payload["youtubeAuthVerified"],
             "bilibili_auth_configured": auth_payload["bilibiliAuthConfigured"],
@@ -2399,6 +3049,8 @@ def update_settings():
     payload.update(auth_payload)
     payload.update(
         {
+            "generic_auth_configured": auth_payload["genericAuthConfigured"],
+            "generic_auth_verified": auth_payload["genericAuthVerified"],
             "youtube_auth_configured": auth_payload["youtubeAuthConfigured"],
             "youtube_auth_verified": auth_payload["youtubeAuthVerified"],
             "bilibili_auth_configured": auth_payload["bilibiliAuthConfigured"],
@@ -2411,17 +3063,45 @@ def update_settings():
     return jsonify(payload)
 
 
-@app.route("/api/start", methods=["POST"])
+@app.route("/api/parse", methods=["POST"])
 @require_web_token
-def start():
+def parse_sources():
     data = request.json or {}
     raw_input = str(data.get("url", ""))
     if raw_input.strip() and not has_url_like_input(raw_input):
-        return jsonify({"error": "请输入有效的视频链接，或包含链接的 Bilibili / YouTube / Douyin 分享文案。"}), 400
+        return jsonify({"error": "请输入有效的视频链接，或包含链接的分享文案。主打 Bilibili / YouTube / Douyin，也支持其他 yt-dlp 可解析平台的直链。"}), 400
 
     urls = collect_url_inputs(raw_input)
     if not urls:
-        return jsonify({"error": "没有识别到可用链接。支持直接粘贴 URL，或粘贴 Bilibili / YouTube / Douyin 分享文案。"}), 400
+        return jsonify({"error": "没有识别到可用链接。支持直接粘贴 URL，或粘贴 Bilibili / YouTube / Douyin 分享文案；其他平台建议直接粘贴完整链接。"}), 400
+    try:
+        validate_web_start_urls(urls)
+    except ValueError as exc:
+        return jsonify({"error": str(exc)}), 400
+
+    use_cookies = bool(data.get("use_cookies"))
+    items = [preview_source_url(url, use_cookies=use_cookies) for url in urls]
+    return jsonify(
+        {
+            "count": len(items),
+            "urls": urls,
+            "items": items,
+        }
+    )
+
+
+@app.route("/api/start", methods=["POST"])
+@require_web_token
+def start():
+    initialize_web_jobs()
+    data = request.json or {}
+    raw_input = str(data.get("url", ""))
+    if raw_input.strip() and not has_url_like_input(raw_input):
+        return jsonify({"error": "请输入有效的视频链接，或包含链接的分享文案。主打 Bilibili / YouTube / Douyin，也支持其他 yt-dlp 可解析平台的直链。"}), 400
+
+    urls = collect_url_inputs(raw_input)
+    if not urls:
+        return jsonify({"error": "没有识别到可用链接。支持直接粘贴 URL，或粘贴 Bilibili / YouTube / Douyin 分享文案；其他平台建议直接粘贴完整链接。"}), 400
     try:
         validate_web_start_urls(urls)
     except ValueError as exc:
@@ -2469,15 +3149,27 @@ def start():
             executor.submit(worker, job_id)
             added += 1
             job_ids.append(job_id)
+    if job_ids:
+        persist_jobs_state(force=True)
     return jsonify({"count": added, "job_ids": job_ids})
 
 
 @app.route("/api/tasks")
 @require_web_token
 def tasks():
+    initialize_web_jobs()
     with jobs_lock:
         tasks_list = []
         for job in sorted(jobs.values(), key=lambda x: x.created_at, reverse=True)[:20]:
+            effective_output_dir = job.output_dir or DOWNLOAD_DIR
+            host_output_dir = map_runtime_path_to_host(effective_output_dir)
+            host_download_path = map_runtime_path_to_host(job.download_path)
+            host_raw_path = map_runtime_path_to_host(job.raw_path)
+            host_article_path = map_runtime_path_to_host(job.article_path)
+            host_transcript_path = map_runtime_path_to_host(job.transcript_path)
+            host_knowledge_path = map_runtime_path_to_host(job.knowledge_path)
+            host_metadata_path = map_runtime_path_to_host(job.metadata_path)
+            host_artifact_dir = map_runtime_path_to_host(job.artifact_dir)
             tasks_list.append(
                 {
                     "id": job.job_id,
@@ -2502,6 +3194,15 @@ def tasks():
                     "generate_transcript": job.generate_transcript,
                     "generate_knowledge": job.generate_knowledge,
                     "knowledge_error": job.knowledge_error,
+                    "resumed_from_state": job.resumed_from_state,
+                    "host_output_dir": host_output_dir,
+                    "host_download_path": host_download_path,
+                    "host_raw_path": host_raw_path,
+                    "host_article_path": host_article_path,
+                    "host_transcript_path": host_transcript_path,
+                    "host_knowledge_path": host_knowledge_path,
+                    "host_metadata_path": host_metadata_path,
+                    "host_artifact_dir": host_artifact_dir,
                 }
             )
     return jsonify({"tasks": tasks_list})
@@ -2541,4 +3242,5 @@ def task_artifact_preview(job_id: str, artifact_kind: str):
 
 
 if __name__ == "__main__":
+    initialize_web_jobs()
     app.run(host=HOST, port=PORT, threaded=True)
