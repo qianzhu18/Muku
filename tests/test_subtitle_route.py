@@ -196,7 +196,12 @@ class SubtitleParsingTests(unittest.TestCase):
     def test_platform_auth_state_prefers_douyin_cookie_file_over_browser_source(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             cookies_path = Path(temp_dir) / "douyin.cookies.txt"
-            cookies_path.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+            cookies_path.write_text(
+                "# Netscape HTTP Cookie File\n"
+                ".douyin.com\tTRUE\t/\tTRUE\t9999999999\tsid_guard\tabc\n"
+                ".douyin.com\tTRUE\t/\tTRUE\t9999999999\tttwid\txyz\n",
+                encoding="utf-8",
+            )
 
             with mock.patch.object(web_app, "DOUYIN_COOKIES_PATH", str(cookies_path)), mock.patch.object(
                 web_app, "DOUYIN_COOKIES_FROM_BROWSER", "chrome"
@@ -1656,7 +1661,12 @@ class TranscriptRoutingTests(unittest.TestCase):
             generic_cookies = Path(temp_dir) / "cookies.txt"
             generic_cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
             douyin_cookies = Path(temp_dir) / "douyin.cookies.txt"
-            douyin_cookies.write_text("# Netscape HTTP Cookie File\n", encoding="utf-8")
+            douyin_cookies.write_text(
+                "# Netscape HTTP Cookie File\n"
+                ".douyin.com\tTRUE\t/\tTRUE\t9999999999\tsid_guard\tabc\n"
+                ".douyin.com\tTRUE\t/\tTRUE\t9999999999\tttwid\txyz\n",
+                encoding="utf-8",
+            )
 
             with mock.patch.dict(
                 web_app.os.environ,

@@ -5,6 +5,7 @@ from contextlib import contextmanager
 import json
 import os
 import shutil
+import sys
 import threading
 import uuid
 from pathlib import Path
@@ -15,11 +16,13 @@ try:
     from . import app as web_app
     from . import openai_compatible_cleanup as cleanup_backend
     from . import openrouter_backends as openrouter_backend
+    from . import cookie_health
     from .transcript_pipeline import detect_platform
 except ImportError:
     import app as web_app
     import openai_compatible_cleanup as cleanup_backend
     import openrouter_backends as openrouter_backend
+    import cookie_health
     from transcript_pipeline import detect_platform
 
 
@@ -529,6 +532,7 @@ def _run_parallel_map(items: list, *, jobs: int, worker, on_result=None):
             results.append(result)
             if on_result is not None:
                 on_result(result)
+            _maybe_emit_stream(result)
         return results
 
     ordered_results: list[dict | None] = [None] * len(items)
@@ -542,6 +546,7 @@ def _run_parallel_map(items: list, *, jobs: int, worker, on_result=None):
             ordered_results[index] = result
             if on_result is not None:
                 on_result(result)
+            _maybe_emit_stream(result)
 
     return [result for result in ordered_results if result is not None]
 
@@ -686,6 +691,43 @@ def _split_pending_audio_paths_with_existing_artifacts(
     )
 
 
+def _preflight_cookie_check(urls: tuple[str, ...]) -> None:
+    """批量启动前对涉及平台做一次 cookies 有效性预检。
+
+    每个平台只取第一个代表 URL 做探测；从浏览器读取的场景无法预检，自动跳过。
+    """
+    platform_to_url: dict[str, str] = {}
+    for url in urls:
+        try:
+            platform = detect_platform(url)
+        except Exception:
+            continue
+        if platform and platform not in platform_to_url:
+            platform_to_url[platform] = url
+
+    failures: list[str] = []
+    for platform, url in platform_to_url.items():
+        try:
+            cookie_opts = web_app.resolve_cookie_options(url)
+        except Exception:
+            continue
+        cookiefile = cookie_opts.get("cookiefile")
+        if not cookiefile:
+            continue
+        health = cookie_health.check_platform(platform, Path(cookiefile))
+        if health.skipped or health.ok:
+            continue
+        line = f"[{platform}] {health.detail}"
+        if health.suggestion:
+            line += f" 建议：{health.suggestion}"
+        failures.append(line)
+
+    if failures:
+        message = "cookies 预检失败，已中止批量任务：\n  - " + "\n  - ".join(failures)
+        message += "\n如确认 cookies 有效或想跳过预检，请加 --skip-cookie-check 重试。"
+        raise click.ClickException(message)
+
+
 def _emit_results(results: list[dict], output_mode: str) -> None:
     if output_mode == "json":
         click.echo(json.dumps({"results": results}, ensure_ascii=False, indent=2))
@@ -720,6 +762,79 @@ def _emit_results(results: list[dict], output_mode: str) -> None:
             click.echo(f"  artifacts: {result['artifact_dir']}")
         if result.get("error"):
             click.echo(f"  error: {result['error']}")
+
+
+_STREAM_EVENT_KEYS = (
+    "source_url",
+    "input_path",
+    "title",
+    "status",
+    "error",
+    "download_path",
+    "transcript_path",
+    "markdown_path",
+    "article_path",
+    "knowledge_path",
+    "artifact_dir",
+    "meta_path",
+)
+
+
+def _to_stream_event(result: dict) -> dict:
+    status = str(result.get("status") or "")
+    is_failed = bool(result.get("error")) or status.startswith("Failed")
+    payload: dict = {"event": "task_failed" if is_failed else "task_done"}
+    for key in _STREAM_EVENT_KEYS:
+        if key in result and result[key] is not None:
+            payload[key] = result[key]
+    return payload
+
+
+def _emit_stream_event(event: dict) -> None:
+    sys.stdout.write(json.dumps(event, ensure_ascii=False) + "\n")
+    sys.stdout.flush()
+
+
+def _emit_batch_complete(results: list[dict]) -> None:
+    succeeded = sum(
+        1
+        for r in results
+        if not r.get("error") and not str(r.get("status") or "").startswith("Failed")
+    )
+    failed = len(results) - succeeded
+    _emit_stream_event(
+        {"event": "batch_complete", "total": len(results), "succeeded": succeeded, "failed": failed}
+    )
+
+
+_stream_emitter = None
+
+
+def _set_stream_emitter(emitter) -> None:
+    global _stream_emitter
+    _stream_emitter = emitter
+
+
+def _maybe_emit_stream(result: dict) -> None:
+    if _stream_emitter is not None:
+        try:
+            _stream_emitter(_to_stream_event(result))
+        except Exception:
+            pass
+
+
+def _resolve_output_mode(output_mode: str, as_json: bool, stream: bool) -> str:
+    if stream:
+        return "stream"
+    return "json" if as_json else output_mode
+
+
+def _finalize_output(results: list[dict], output_mode: str) -> None:
+    """批量任务结束时的统一输出入口。"""
+    if output_mode == "stream":
+        _emit_batch_complete(results)
+        return
+    _emit_results(results, output_mode)
 
 
 def _job_summary(job: web_app.Job) -> dict:
@@ -1499,6 +1614,16 @@ def config_command(
     default=None,
     help="是否保留转写前预处理音频。",
 )
+@click.option(
+    "--skip-cookie-check",
+    is_flag=True,
+    help="跳过批量启动前的 cookies 有效性预检（调试用）。",
+)
+@click.option(
+    "--stream",
+    is_flag=True,
+    help="流式输出 NDJSON 进度（每个任务完成一行，结尾汇总）。",
+)
 def capture_command(
     urls: tuple[str, ...],
     input_file: Path | None,
@@ -1532,6 +1657,8 @@ def capture_command(
     knowledge_prompt_file: Path | None,
     overwrite_knowledge: bool,
     keep_transcription_input: bool | None,
+    skip_cookie_check: bool,
+    stream: bool,
 ) -> None:
     """从 URL 直接生成逐字稿，可选继续整理知识库。"""
     resolved_urls = _collect_url_inputs(
@@ -1539,7 +1666,8 @@ def capture_command(
         input_file=input_file,
         stdin_enabled=stdin_enabled,
     )
-    final_output_mode = _normalize_output_mode(output_mode, as_json)
+    final_output_mode = _resolve_output_mode(output_mode, as_json, stream)
+    _set_stream_emitter(_emit_stream_event if stream else None)
     previous_results = _load_result_file_records(result_file) if resume else []
     required_stage = "knowledge" if knowledge else "transcript"
     pending_urls, resumed_results, reusable_checkpoint_results = _split_pending_inputs(
@@ -1584,6 +1712,8 @@ def capture_command(
                 required_stage=required_stage,
             )
         checkpoint_writer.flush(resumed_results + reused_existing_results)
+        if not skip_cookie_check and pending_urls:
+            _preflight_cookie_check(pending_urls)
         fresh_results = (
             _run_download_jobs(
                 urls=pending_urls,
@@ -1618,7 +1748,7 @@ def capture_command(
         if knowledge:
             results = _attach_knowledge_results(results, overwrite=overwrite_knowledge, jobs=jobs)
     checkpoint_writer.flush(results)
-    _emit_results(results, final_output_mode)
+    _finalize_output(results, final_output_mode)
     _exit_for_failures(results)
 
 
@@ -1738,6 +1868,16 @@ def capture_command(
     default=None,
     help="是否保留转写前预处理音频。",
 )
+@click.option(
+    "--skip-cookie-check",
+    is_flag=True,
+    help="跳过批量启动前的 cookies 有效性预检（调试用）。",
+)
+@click.option(
+    "--stream",
+    is_flag=True,
+    help="流式输出 NDJSON 进度（每个任务完成一行，结尾汇总）。",
+)
 def download_command(
     urls: tuple[str, ...],
     input_file: Path | None,
@@ -1773,6 +1913,8 @@ def download_command(
     knowledge_prompt_file: Path | None,
     overwrite_knowledge: bool,
     keep_transcription_input: bool | None,
+    skip_cookie_check: bool,
+    stream: bool,
 ) -> None:
     """下载 URL，可选附带逐字稿生成。"""
     if transcript and preset != DEFAULT_AUDIO_PRESET:
@@ -1785,7 +1927,8 @@ def download_command(
         input_file=input_file,
         stdin_enabled=stdin_enabled,
     )
-    final_output_mode = _normalize_output_mode(output_mode, as_json)
+    final_output_mode = _resolve_output_mode(output_mode, as_json, stream)
+    _set_stream_emitter(_emit_stream_event if stream else None)
     previous_results = _load_result_file_records(result_file) if resume else []
     required_stage = "knowledge" if knowledge else "transcript" if transcript else "download"
     pending_urls, resumed_results, reusable_checkpoint_results = _split_pending_inputs(
@@ -1830,6 +1973,8 @@ def download_command(
                 required_stage=required_stage,
             )
         checkpoint_writer.flush(resumed_results + reused_existing_results)
+        if not skip_cookie_check and pending_urls:
+            _preflight_cookie_check(pending_urls)
         fresh_results = (
             _run_download_jobs(
                 urls=pending_urls,
@@ -1864,7 +2009,7 @@ def download_command(
         if knowledge:
             results = _attach_knowledge_results(results, overwrite=overwrite_knowledge, jobs=jobs)
     checkpoint_writer.flush(results)
-    _emit_results(results, final_output_mode)
+    _finalize_output(results, final_output_mode)
     _exit_for_failures(results)
 
 
@@ -1933,6 +2078,11 @@ def download_command(
     default=None,
     help="是否保留转写前预处理音频。",
 )
+@click.option(
+    "--stream",
+    is_flag=True,
+    help="流式输出 NDJSON 进度（每个任务完成一行，结尾汇总）。",
+)
 def audio_command(
     audio_files: tuple[Path, ...],
     input_file: Path | None,
@@ -1959,6 +2109,7 @@ def audio_command(
     knowledge_prompt_file: Path | None,
     overwrite_knowledge: bool,
     keep_transcription_input: bool | None,
+    stream: bool,
 ) -> None:
     """把本地音频文件转成逐字稿，可选继续整理知识库。"""
     raw_paths = _collect_line_inputs(
@@ -1968,7 +2119,8 @@ def audio_command(
         label="音频路径",
     )
     resolved_input_paths = tuple(str(Path(path).expanduser().resolve()) for path in raw_paths)
-    final_output_mode = _normalize_output_mode(output_mode, as_json)
+    final_output_mode = _resolve_output_mode(output_mode, as_json, stream)
+    _set_stream_emitter(_emit_stream_event if stream else None)
     previous_results = _load_result_file_records(result_file) if resume else []
     required_stage = "knowledge" if knowledge else "transcript"
     pending_paths, resumed_results, reusable_checkpoint_results = _split_pending_inputs(
@@ -2027,7 +2179,7 @@ def audio_command(
         if knowledge:
             results = _attach_knowledge_results(results, overwrite=overwrite_knowledge, jobs=jobs)
     checkpoint_writer.flush(results)
-    _emit_results(results, final_output_mode)
+    _finalize_output(results, final_output_mode)
     _exit_for_failures(results)
 
 
@@ -2071,6 +2223,11 @@ def doctor_command(as_json: bool) -> None:
     default=False,
     help="是否返回转写信息.json 的完整 metadata。",
 )
+@click.option(
+    "--stream",
+    is_flag=True,
+    help="流式输出 NDJSON 进度（每个任务完成一行，结尾汇总）。",
+)
 def artifacts_command(
     targets: tuple[Path, ...],
     input_file: Path | None,
@@ -2079,6 +2236,7 @@ def artifacts_command(
     as_json: bool,
     result_file: Path | None,
     full_metadata: bool,
+    stream: bool,
 ) -> None:
     """从任意产物路径反查整组逐字稿 sidecar。"""
     resolved_targets = _collect_line_inputs(
@@ -2091,9 +2249,10 @@ def artifacts_command(
         _artifact_record_with_metadata(Path(target), include_full_metadata=full_metadata)
         for target in resolved_targets
     ]
-    final_output_mode = _normalize_output_mode(output_mode, as_json)
+    final_output_mode = _resolve_output_mode(output_mode, as_json, stream)
+    _set_stream_emitter(_emit_stream_event if stream else None)
     _write_result_file(results, result_file)
-    _emit_results(results, final_output_mode)
+    _finalize_output(results, final_output_mode)
 
 
 @main.command("knowledge")
@@ -2136,6 +2295,11 @@ def artifacts_command(
     default=False,
     help="是否覆盖已有的知识库文件。",
 )
+@click.option(
+    "--stream",
+    is_flag=True,
+    help="流式输出 NDJSON 进度（每个任务完成一行，结尾汇总）。",
+)
 def knowledge_command(
     targets: tuple[Path, ...],
     input_file: Path | None,
@@ -2148,6 +2312,7 @@ def knowledge_command(
     knowledge_model: str | None,
     knowledge_prompt_file: Path | None,
     overwrite: bool,
+    stream: bool,
 ) -> None:
     """基于现有逐字稿 sidecar 生成知识库整理稿。"""
     resolved_targets = _collect_line_inputs(
@@ -2156,7 +2321,8 @@ def knowledge_command(
         stdin_enabled=stdin_enabled,
         label="逐字稿路径",
     )
-    final_output_mode = _normalize_output_mode(output_mode, as_json)
+    final_output_mode = _resolve_output_mode(output_mode, as_json, stream)
+    _set_stream_emitter(_emit_stream_event if stream else None)
     resolved_target_paths = tuple(str(Path(target).expanduser().resolve()) for target in resolved_targets)
     previous_results = _load_result_file_records(result_file) if resume else []
     pending_targets, resumed_results, reusable_results = _split_pending_inputs(
@@ -2186,7 +2352,7 @@ def knowledge_command(
         results = _order_results_by_inputs(resolved_target_paths, resumed_results + reusable_results + fresh_results)
 
     checkpoint_writer.flush(results)
-    _emit_results(results, final_output_mode)
+    _finalize_output(results, final_output_mode)
     _exit_for_failures(results)
 
 

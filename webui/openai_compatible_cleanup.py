@@ -1,5 +1,6 @@
 import json
 import os
+import random
 import time
 from dataclasses import dataclass, replace
 from pathlib import Path
@@ -10,6 +11,11 @@ try:
     from .env_config import load_env_file
 except ImportError:
     from env_config import load_env_file
+
+try:
+    from .http_utils import request_kwargs
+except ImportError:
+    from http_utils import request_kwargs
 
 load_env_file()
 
@@ -141,7 +147,9 @@ KNOWLEDGE_DRAFT_PROMPT_FILE = os.environ.get(
 KNOWLEDGE_DRAFT_PROMPT_TEXT = os.environ.get("KNOWLEDGE_DRAFT_PROMPT_TEXT", "")
 
 AI_TEXT_TIMEOUT_SECONDS = _env_int("AI_TEXT_TIMEOUT_SECONDS", 180)
-AI_TEXT_MAX_RETRIES = _env_int("AI_TEXT_MAX_RETRIES", 2)
+AI_TEXT_CONNECT_TIMEOUT_SECONDS = _env_int("AI_TEXT_CONNECT_TIMEOUT_SECONDS", 20)
+AI_TEXT_RETRY_BACKOFF_MAX = _env_int("AI_TEXT_RETRY_BACKOFF_MAX", 60)
+AI_TEXT_MAX_RETRIES = _env_int("AI_TEXT_MAX_RETRIES", 4)
 AI_CLEANUP_TIMEOUT_SECONDS = _env_int("AI_CLEANUP_TIMEOUT_SECONDS", AI_TEXT_TIMEOUT_SECONDS)
 AI_CLEANUP_MAX_RETRIES = _env_int("AI_CLEANUP_MAX_RETRIES", AI_TEXT_MAX_RETRIES)
 ARTICLE_DRAFT_TIMEOUT_SECONDS = _env_int("ARTICLE_DRAFT_TIMEOUT_SECONDS", AI_TEXT_TIMEOUT_SECONDS)
@@ -489,7 +497,8 @@ def _post_chat(*, config: TextBackendConfig, payload: dict) -> ChatCompletionRes
                     url,
                     headers=_headers(config.api_key),
                     json=request_payload,
-                    timeout=config.timeout_seconds,
+                    timeout=(AI_TEXT_CONNECT_TIMEOUT_SECONDS, config.timeout_seconds),
+                    **request_kwargs(),
                 )
                 response.raise_for_status()
                 data = response.json()
@@ -506,7 +515,8 @@ def _post_chat(*, config: TextBackendConfig, payload: dict) -> ChatCompletionRes
                 )
                 if attempt >= config.max_retries or not should_retry:
                     break
-                time.sleep(min(2 ** (attempt - 1), 8))
+                base = min(2 ** (attempt - 1), AI_TEXT_RETRY_BACKOFF_MAX)
+                time.sleep(base + random.uniform(0, base * 0.2))
 
         if advance_model:
             continue

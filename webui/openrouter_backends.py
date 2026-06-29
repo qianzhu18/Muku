@@ -1,6 +1,7 @@
 import base64
 import json
 import os
+import random
 import time
 from pathlib import Path
 
@@ -10,6 +11,11 @@ try:
     from .env_config import load_env_file
 except ImportError:
     from env_config import load_env_file
+
+try:
+    from .http_utils import request_kwargs
+except ImportError:
+    from http_utils import request_kwargs
 
 load_env_file()
 
@@ -23,7 +29,12 @@ OPENROUTER_TRANSCRIPTION_MODEL = os.environ.get(
 OPENROUTER_CLEANUP_MODEL = os.environ.get("OPENROUTER_CLEANUP_MODEL", "openai/gpt-4o-mini")
 OPENROUTER_ARTICLE_MODEL = os.environ.get("OPENROUTER_ARTICLE_MODEL", "openai/gpt-4o-mini")
 OPENROUTER_TIMEOUT_SECONDS = int(os.environ.get("OPENROUTER_TIMEOUT_SECONDS", "600"))
-OPENROUTER_MAX_RETRIES = int(os.environ.get("OPENROUTER_MAX_RETRIES", "3"))
+OPENROUTER_CONNECT_TIMEOUT_SECONDS = int(os.environ.get("OPENROUTER_CONNECT_TIMEOUT_SECONDS", "30"))
+OPENROUTER_READ_TIMEOUT_SECONDS = int(
+    os.environ.get("OPENROUTER_READ_TIMEOUT_SECONDS", str(OPENROUTER_TIMEOUT_SECONDS))
+)
+OPENROUTER_MAX_RETRIES = int(os.environ.get("OPENROUTER_MAX_RETRIES", "6"))
+OPENROUTER_RETRY_BACKOFF_MAX = int(os.environ.get("OPENROUTER_RETRY_BACKOFF_MAX", "60"))
 
 
 def _safe_header_value(value: str) -> str:
@@ -65,7 +76,8 @@ def _post_chat(payload: dict) -> dict:
                 url,
                 headers=_headers(),
                 json=payload,
-                timeout=OPENROUTER_TIMEOUT_SECONDS,
+                timeout=(OPENROUTER_CONNECT_TIMEOUT_SECONDS, OPENROUTER_READ_TIMEOUT_SECONDS),
+                **request_kwargs(),
             )
             response.raise_for_status()
             return response.json()
@@ -73,7 +85,8 @@ def _post_chat(payload: dict) -> dict:
             last_error = exc
             if attempt >= OPENROUTER_MAX_RETRIES:
                 break
-            time.sleep(min(2 ** (attempt - 1), 8))
+            base = min(2 ** (attempt - 1), OPENROUTER_RETRY_BACKOFF_MAX)
+            time.sleep(base + random.uniform(0, base * 0.2))
 
     raise RuntimeError(f"OpenRouter request failed: {last_error}") from last_error
 

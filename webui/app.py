@@ -22,6 +22,7 @@ from urllib.parse import parse_qsl, unquote, urlparse
 from flask import Flask, jsonify, render_template, request
 
 try:
+    from . import cookie_health
     from . import openai_compatible_cleanup as cleanup_backend
     from . import openrouter_backends as openrouter_backend
     from .douyin_provider import DouyinDownloadError, download_douyin_media
@@ -63,6 +64,7 @@ try:
         write_sidecar_files,
     )
 except ImportError:
+    import cookie_health
     import openai_compatible_cleanup as cleanup_backend
     import openrouter_backends as openrouter_backend
     from douyin_provider import DouyinDownloadError, download_douyin_media
@@ -1222,12 +1224,33 @@ def platform_auth_state(platform: str) -> dict[str, object]:
     if selected["kind"] == "file":
         source_path = Path(str(selected["value"])).expanduser()
         path_exists = source_path.exists()
+        verified = path_exists
+        status = "verified" if path_exists else "missing_file"
+        health_detail = ""
+        health_suggestion = ""
+        health_skipped = False
+        if path_exists:
+            try:
+                health = cookie_health.check_platform(platform, source_path)
+                health_detail = health.detail
+                health_suggestion = health.suggestion
+                health_skipped = health.skipped
+                if not health.skipped:
+                    verified = health.ok
+                    status = "verified" if health.ok else "invalid"
+            except Exception as exc:
+                verified = False
+                status = "check_failed"
+                health_detail = f"cookies 预检失败：{exc}"
         state.update(
             {
-                "verified": path_exists,
-                "status": "verified" if path_exists else "missing_file",
+                "verified": verified,
+                "status": status,
                 "source_path": str(source_path),
                 "source_display": f"{selected['config_key']}={source_path}",
+                "health_detail": health_detail,
+                "health_suggestion": health_suggestion,
+                "health_skipped": health_skipped,
             }
         )
         return state
