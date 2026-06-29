@@ -552,4 +552,8 @@ def _extract_text(data: dict) -> str:
         if text_parts:
             return "\n".join(text_parts).strip()
 
+    reasoning = message.get("reasoning")
+    if isinstance(reasoning, str) and reasoning.strip():
+        return reasoning.strip()
+
     raise RuntimeError("Unable to extract text from AI text response.")
