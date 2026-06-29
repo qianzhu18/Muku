@@ -35,6 +35,51 @@ OPENROUTER_READ_TIMEOUT_SECONDS = int(
 )
 OPENROUTER_MAX_RETRIES = int(os.environ.get("OPENROUTER_MAX_RETRIES", "6"))
 OPENROUTER_RETRY_BACKOFF_MAX = int(os.environ.get("OPENROUTER_RETRY_BACKOFF_MAX", "60"))
+RETRYABLE_STATUS_CODES = {408, 409, 425, 429, 500, 502, 503, 504}
+
+
+def _response_error_detail(response: requests.Response | None) -> str:
+    if response is None:
+        return ""
+
+    text = (response.text or "").strip()
+    if not text:
+        return ""
+
+    try:
+        body = response.json()
+    except ValueError:
+        detail = text
+    else:
+        error = body.get("error") if isinstance(body, dict) else None
+        if isinstance(error, dict):
+            message = str(error.get("message") or "").strip()
+            code = str(error.get("code") or "").strip()
+            detail = message
+            if code and code not in detail:
+                detail = f"{detail} (code: {code})" if detail else f"code: {code}"
+        else:
+            detail = text
+
+    if len(detail) > 600:
+        detail = detail[:597].rstrip() + "..."
+    return detail
+
+
+def _should_retry(exc: Exception) -> bool:
+    if isinstance(exc, (requests.Timeout, requests.ConnectionError)):
+        return True
+
+    response = getattr(exc, "response", None)
+    status_code = getattr(response, "status_code", None)
+    return status_code in RETRYABLE_STATUS_CODES
+
+
+def _format_request_error(exc: Exception) -> str:
+    detail = _response_error_detail(getattr(exc, "response", None))
+    if detail:
+        return f"{exc} - {detail}"
+    return str(exc)
 
 
 def _safe_header_value(value: str) -> str:
@@ -83,12 +128,12 @@ def _post_chat(payload: dict) -> dict:
             return response.json()
         except (requests.RequestException, json.JSONDecodeError) as exc:
             last_error = exc
-            if attempt >= OPENROUTER_MAX_RETRIES:
+            if attempt >= OPENROUTER_MAX_RETRIES or not _should_retry(exc):
                 break
             base = min(2 ** (attempt - 1), OPENROUTER_RETRY_BACKOFF_MAX)
             time.sleep(base + random.uniform(0, base * 0.2))
 
-    raise RuntimeError(f"OpenRouter request failed: {last_error}") from last_error
+    raise RuntimeError(f"OpenRouter request failed: {_format_request_error(last_error)}") from last_error
 
 
 def _encode_audio(audio_path: Path) -> str:

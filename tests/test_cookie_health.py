@@ -43,6 +43,10 @@ class BilibiliCheckTests(unittest.TestCase):
         health = cookie_health.check_bilibili(self._cookiefile())
         self.assertTrue(health.ok)
         self.assertIn("测试用户", health.detail)
+        mock_session.headers.update.assert_called_once()
+        headers = mock_session.headers.update.call_args.args[0]
+        self.assertIn("Mozilla/5.0", headers["User-Agent"])
+        self.assertEqual(headers["Referer"], "https://www.bilibili.com/")
 
     @mock.patch("webui.cookie_health.requests.Session")
     def test_not_logged_in_returns_failure(self, mock_session_cls) -> None:

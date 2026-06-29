@@ -57,6 +57,15 @@ def check_bilibili(cookiefile: Path) -> CookieHealth:
 
     session = requests.Session()
     session.cookies = jar
+    session.headers.update({
+        "User-Agent": (
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36"
+        ),
+        "Referer": "https://www.bilibili.com/",
+        "Origin": "https://www.bilibili.com",
+        "Accept": "application/json",
+    })
     try:
         resp = session.get(
             "https://api.bilibili.com/x/web-interface/nav",

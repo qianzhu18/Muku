@@ -363,10 +363,11 @@ video-downloade serve --port 5657
 批量下载或转写中途卡死、报 TLS 握手超时或 DNS 解析失败，通常是 openrouter.ai 在国内网络下被间歇性干扰。按顺序排查：
 
 1. **Cookies 预检拦截**：批量启动前会自动预检 B 站登录态（请求 `api.bilibili.com/x/web-interface/nav`）。若 cookies 过期或返回 412，会立即中止并提示。确认 cookies 有效但想跳过预检，加 `--skip-cookie-check`。
-2. **显式代理**：在 `.env` 配置 `OPENROUTER_PROXY=http://127.0.0.1:7897`（你的本地代理端口）。配置后转写、清洗、知识库调用都会走代理，告别系统环境变量透传的 SSL 错乱。
-3. **代理 SSL 证书问题**：若代理导致证书校验失败，临时设 `OPENROUTER_INSECURE_SKIP_VERIFY=true`（仅在受控环境使用）。
-4. **重试已强化**：默认 6 次重试 + 退避封顶 60 秒 + 20% 抖动，连接/读取超时分开（30s/600s）。仍失败可调 `OPENROUTER_MAX_RETRIES`、`OPENROUTER_RETRY_BACKOFF_MAX`。
-5. **看不到进度**：加 `--stream`，每个任务完成立即输出一行 NDJSON，配合 `tee progress.jsonl` 或 Monitor 工具实时消费。
+2. **OpenRouter 402 不一定是总余额不足**：如果错误里出现 `requires at least $0.50 in balance for audio`，优先检查 OpenRouter API key 自身的 `limit` / `limit_remaining`。账户总余额还有钱，但当前 key 设置了很低的用量上限时，音频模型仍会被 402 拦截。把这把 key 的 limit 调高，或换一把剩余额度高于 `$0.50` 的 key。
+3. **显式代理**：在 `.env` 配置 `OPENROUTER_PROXY=http://127.0.0.1:7897`（你的本地代理端口）。配置后转写、清洗、知识库调用都会走代理，告别系统环境变量透传的 SSL 错乱。
+4. **代理 SSL 证书问题**：若代理导致证书校验失败，临时设 `OPENROUTER_INSECURE_SKIP_VERIFY=true`（仅在受控环境使用）。
+5. **重试已强化**：默认 6 次重试 + 退避封顶 60 秒 + 20% 抖动，连接/读取超时分开（30s/600s）。仍失败可调 `OPENROUTER_MAX_RETRIES`、`OPENROUTER_RETRY_BACKOFF_MAX`。
+6. **看不到进度**：加 `--stream`，每个任务完成立即输出一行 NDJSON，配合 `tee progress.jsonl` 或 Monitor 工具实时消费。
 
 ## Web 工作台
 

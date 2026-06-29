@@ -2188,6 +2188,8 @@ def build_parse_preview_options(url: str, *, use_cookies: bool) -> dict:
     options["progress_hooks"] = []
     options["quiet"] = True
     options["no_warnings"] = True
+    options["writesubtitles"] = True
+    options["writeautomaticsub"] = True
     return options
 
 
