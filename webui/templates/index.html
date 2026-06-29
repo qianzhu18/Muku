@@ -32,7 +32,7 @@
             <p class="eyebrow">Settings</p>
             <h2>服务配置中心</h2>
             <p>
-              部署完成后，在这里保存默认下载目录、模型、服务地址和提示词。面向本地或私有部署，不建议作为公网多人共用面板。
+              部署完成后，在这里保存默认下载目录、平台 Cookies、模型、服务地址和提示词。面向本地或私有部署，不建议作为公网多人共用面板。
             </p>
           </div>
           <button id="settings-close" type="button" class="icon-button">关闭</button>
@@ -43,6 +43,83 @@
             <div id="settings-file-hint"></div>
             <div id="settings-root-hint"></div>
           </div>
+
+          <details class="settings-section" open>
+            <summary>平台 Cookies</summary>
+            <div class="settings-section-body">
+              <p class="field-help">
+                这里直接维护登录态。推荐顺序是：先登录平台，再优先填写平台专用 <code>cookies.txt</code>；其他 yt-dlp
+                支持的平台，可回退到通用 <code>cookies.txt</code> 或 <code>COOKIES_FROM_BROWSER</code>。系统会优先使用平台专用
+                <code>cookies.txt</code>，并自动尝试仓库内 <code>cookies/*.cookies.txt</code> 与 Docker 挂载的
+                <code>/cookies/*.cookies.txt</code>。
+              </p>
+              <div class="settings-cookie-grid">
+                <section class="settings-cookie-platform">
+                  <div class="settings-cookie-head">
+                    <strong>其他平台 / 通用</strong>
+                    <span id="settings-generic-cookie-status" class="settings-cookie-status">未配置</span>
+                  </div>
+                  <div class="field">
+                    <label for="settings-cookies-path">通用 cookies.txt 路径</label>
+                    <input id="settings-cookies-path" type="text" placeholder="/absolute/path/to/cookies.txt" />
+                  </div>
+                  <div class="field">
+                    <label for="settings-cookies-from-browser">通用浏览器登录态</label>
+                    <input id="settings-cookies-from-browser" type="text" placeholder="chrome 或 chrome:Profile 1" />
+                  </div>
+                  <p id="settings-generic-cookies-help" class="field-help"></p>
+                </section>
+
+                <section class="settings-cookie-platform">
+                  <div class="settings-cookie-head">
+                    <strong>YouTube</strong>
+                    <span id="settings-youtube-cookie-status" class="settings-cookie-status">未配置</span>
+                  </div>
+                  <div class="field">
+                    <label for="settings-youtube-cookies-path">YouTube cookies.txt 路径</label>
+                    <input id="settings-youtube-cookies-path" type="text" placeholder="/absolute/path/to/youtube.cookies.txt" />
+                  </div>
+                  <div class="field">
+                    <label for="settings-youtube-cookies-from-browser">YouTube 浏览器登录态</label>
+                    <input id="settings-youtube-cookies-from-browser" type="text" placeholder="chrome 或 chrome:Profile 1" />
+                  </div>
+                  <p id="settings-youtube-cookies-help" class="field-help"></p>
+                </section>
+
+                <section class="settings-cookie-platform">
+                  <div class="settings-cookie-head">
+                    <strong>Bilibili</strong>
+                    <span id="settings-bilibili-cookie-status" class="settings-cookie-status">未配置</span>
+                  </div>
+                  <div class="field">
+                    <label for="settings-bilibili-cookies-path">Bilibili cookies.txt 路径</label>
+                    <input id="settings-bilibili-cookies-path" type="text" placeholder="/absolute/path/to/bilibili.cookies.txt" />
+                  </div>
+                  <div class="field">
+                    <label for="settings-bilibili-cookies-from-browser">Bilibili 浏览器登录态</label>
+                    <input id="settings-bilibili-cookies-from-browser" type="text" placeholder="chrome 或 chrome:Profile 1" />
+                  </div>
+                  <p id="settings-bilibili-cookies-help" class="field-help"></p>
+                </section>
+
+                <section class="settings-cookie-platform">
+                  <div class="settings-cookie-head">
+                    <strong>Douyin</strong>
+                    <span id="settings-douyin-cookie-status" class="settings-cookie-status">未配置</span>
+                  </div>
+                  <div class="field">
+                    <label for="settings-douyin-cookies-path">Douyin cookies.txt 路径</label>
+                    <input id="settings-douyin-cookies-path" type="text" placeholder="/absolute/path/to/douyin.cookies.txt" />
+                  </div>
+                  <div class="field">
+                    <label for="settings-douyin-cookies-from-browser">Douyin 浏览器登录态</label>
+                    <input id="settings-douyin-cookies-from-browser" type="text" placeholder="chrome 或 chrome:Profile 1" />
+                  </div>
+                  <p id="settings-douyin-cookies-help" class="field-help"></p>
+                </section>
+              </div>
+            </div>
+          </details>
 
           <details class="settings-section" open>
             <summary>存储与转写</summary>
@@ -200,7 +277,7 @@
           <div class="brand-copy">
             <p class="eyebrow">Video to Markdown Workspace</p>
             <h1>幕库 Muku</h1>
-            <p>先把 Bilibili、YouTube、Douyin 的高密度内容整理成逐字稿和解析稿，再继续收入你自己的 Markdown 知识库。</p>
+            <p>主打 Bilibili、YouTube、Douyin，也兼容其他 yt-dlp 支持的平台，把内容收进你自己的 Markdown 知识库。</p>
           </div>
         </div>
         <div class="header-actions">
@@ -213,36 +290,6 @@
 
       <section class="workspace">
         <div class="primary-column">
-          <section id="starter-guide" class="card starter-card">
-            <div class="starter-head">
-              <div class="card-header compact">
-                <p class="eyebrow">First Run Guide</p>
-                <h2 id="starter-title">第一次使用导航</h2>
-                <p id="starter-subtitle">先完成核心配置，再发起第一条任务。</p>
-              </div>
-              <span id="starter-progress" class="starter-progress">0 / 4</span>
-            </div>
-
-            <div class="starter-layout">
-              <ol id="starter-checklist" class="starter-checklist"></ol>
-
-              <div class="starter-side">
-                <div class="starter-side-block">
-                  <span class="starter-side-label">平台登录态</span>
-                  <div id="starter-platforms" class="starter-platforms"></div>
-                </div>
-
-                <div id="starter-callout" class="starter-callout"></div>
-
-                <div class="starter-actions">
-                  <button id="starter-open-settings" type="button" class="nav-button">
-                    打开设置
-                  </button>
-                </div>
-              </div>
-            </div>
-          </section>
-
           <section class="card task-form-card">
             <div class="card-header">
               <h2>新建任务</h2>
@@ -291,17 +338,6 @@
                     </label>
                   </div>
 
-                  <div class="field checkbox-field field-knowledge">
-                    <label for="generate-knowledge">知识库稿</label>
-                    <label class="switch-line" for="generate-knowledge">
-                      <input type="checkbox" id="generate-knowledge" />
-                      逐字稿完成后继续生成 `知识库.md`
-                    </label>
-                    <p class="field-help" id="knowledge-option-hint">
-                      仅在 Markdown 逐字稿模式下可用。
-                    </p>
-                  </div>
-
                   <div class="field field-download-dir">
                     <label for="download-dir">本次保存到（可选）</label>
                     <input
@@ -321,7 +357,7 @@
                     `Markdown 逐字稿` 会先试平台字幕，失败后自动回退到 MP3 转写。
                   </p>
                   <p id="cookies-hint" class="field-help">
-                    未检测到 Cookies 时，YouTube、Douyin 和部分 B 站视频可能受限。
+                    未检测到 Cookies 时，受限平台或需要登录的网站可能受限；Bilibili、YouTube、Douyin 优先建议补平台专用 cookies。
                   </p>
                 </div>
               </div>

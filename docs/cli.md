@@ -89,9 +89,12 @@ video-downloade config --json
 video-downloade config \
   --download-dir "/Users/you/Downloads/muku" \
   --transcription-model openai/gpt-audio-mini \
-  --cleanup-model GLM-4.5 \
-  --article-model GLM-4.5 \
-  --knowledge-model GLM-4.5 \
+  --cleanup-base-url https://openrouter.ai/api/v1 \
+  --cleanup-model stepfun/step-3.7-flash \
+  --article-base-url https://openrouter.ai/api/v1 \
+  --article-model stepfun/step-3.7-flash \
+  --knowledge-base-url https://openrouter.ai/api/v1 \
+  --knowledge-model stepfun/step-3.7-flash \
   --json
 
 # Docker 容器里建议写容器内路径
@@ -133,8 +136,8 @@ video-downloade config \
 video-downloade capture URL --language zh --json
 video-downloade capture URL --output-dir "/Users/you/Downloads/muku/bilibili" --json
 video-downloade capture URL --transcription-model openai/gpt-audio-mini --json
-video-downloade capture URL --cleanup-model GLM-4.5 --article-model GLM-4.5 --json
-video-downloade capture URL --knowledge-model GLM-4.5 --json
+video-downloade capture URL --cleanup-model stepfun/step-3.7-flash --article-model stepfun/step-3.7-flash --json
+video-downloade capture URL --knowledge-model stepfun/step-3.7-flash --json
 video-downloade capture URL --knowledge-prompt-file ./知识库提示词.md --json
 video-downloade audio FILE --no-article --knowledge --json
 ```

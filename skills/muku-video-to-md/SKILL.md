@@ -91,9 +91,12 @@ video-downloade capture URL \
 video-downloade config \
   --download-dir "/Users/you/Downloads/muku" \
   --transcription-model openai/gpt-audio-mini \
-  --cleanup-model GLM-4.5 \
-  --article-model GLM-4.5 \
-  --knowledge-model GLM-4.5 \
+  --cleanup-base-url https://openrouter.ai/api/v1 \
+  --cleanup-model stepfun/step-3.7-flash \
+  --article-base-url https://openrouter.ai/api/v1 \
+  --article-model stepfun/step-3.7-flash \
+  --knowledge-base-url https://openrouter.ai/api/v1 \
+  --knowledge-model stepfun/step-3.7-flash \
   --json
 ```
 
@@ -111,17 +114,35 @@ Docker 场景下，把 `--download-dir` 改成容器内路径，例如 `/downloa
 ```bash
 video-downloade capture URL --language zh --json
 video-downloade capture URL --transcription-model openai/gpt-audio-mini --json
-video-downloade capture URL --knowledge-model GLM-4.5 --json
+video-downloade capture URL --knowledge-model stepfun/step-3.7-flash --json
 video-downloade capture URL --knowledge-prompt-file ./知识库提示词.md --json
 video-downloade audio FILE --no-article --knowledge --json
 ```
 
+## Local text backend
+
+本机清洗稿、解析稿、知识库稿默认都走 OpenRouter：
+
+```bash
+AI_CLEANUP_BASE_URL=https://openrouter.ai/api/v1
+AI_CLEANUP_MODEL=stepfun/step-3.7-flash
+ARTICLE_DRAFT_BASE_URL=https://openrouter.ai/api/v1
+ARTICLE_DRAFT_MODEL=stepfun/step-3.7-flash
+KNOWLEDGE_DRAFT_BASE_URL=https://openrouter.ai/api/v1
+KNOWLEDGE_DRAFT_MODEL=stepfun/step-3.7-flash
+```
+
+转写也使用 `OPENROUTER_API_KEY`；不要回显真实 key。
+
 ## Expected artifacts
 
 - `xxx - 原始逐字稿.txt`
-- `xxx - 解析稿.md`
-- `xxx - 知识库.md`
+  原始逐字稿，仅保留原始文本
 - `xxx - 逐字稿.md`
+  清洗后的逐字稿正文，不重复附带原始稿、解析稿或额外说明
+- `xxx - 解析稿.md`
+  仅保留解析成稿正文，严格遵循 `解析提示词.md`
+- `xxx - 知识库.md`
 - `xxx - 转写信息.json`
 
 ## Operational notes
@@ -131,4 +152,7 @@ video-downloade audio FILE --no-article --knowledge --json
 - Bilibili、YouTube、Douyin 建议分开配置 Cookies，避免串用
 - 如果用户说“网页端已经配好了”，仍然建议先跑 `video-downloade config --json`，确认 CLI 与网页看到的是同一份默认配置
 - 转写前预处理音频默认写入系统临时目录，不会在下载目录里额外留下第二个可见 MP3
-- 知识库整理默认沿用 `ARTICLE_DRAFT_*` 这组配置；只有需要单独后端时再设置 `KNOWLEDGE_DRAFT_*`
+- `逐字稿.md` 默认只写清洗后的正文；原始内容单独放在 `原始逐字稿.txt`
+- `解析稿.md` 默认只写最终成稿，不添加“解析稿”“成稿如下”等外层包装
+- 默认解析规则来自仓库根目录的 `解析提示词.md`；批量回写或重生成时也要遵守同一规范
+- 知识库整理默认显式使用 `KNOWLEDGE_DRAFT_*`，本机与 `ARTICLE_DRAFT_*` 同样走 OpenRouter StepFun

@@ -8,11 +8,19 @@ __pycache__/
 venv/
 .venv*/
 .env
+.env.*
+!.env.example
 *.egg-info/
 .DS_Store
+.tmp/
+mlx_service/
+build/
+dist/
 
 # 排除下载产生的临时文件
 downloads/
+docker-data/
+.runtime/
 *.mp4
 *.part
 *.ytdl
@@ -21,3 +29,7 @@ downloads/
 cookies.txt
 cookies/
 *.cookies.txt
+.gstack/
+
+# 排除本地 Android 签名材料
+android-wrapper/signing/

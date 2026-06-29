@@ -40,7 +40,7 @@ RUN set -e; \
 ENV DOWNLOAD_DIR=/downloads
 ENV DOWNLOAD_ROOT_DIR=/downloads
 ENV VIDEO_DOWNLOADE_CONFIG_DIR=/config
-EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\", \"8080\")}/', timeout=5)"
+EXPOSE 5657
+HEALTHCHECK --interval=30s --timeout=5s --start-period=15s --retries=3 CMD python -c "import os, urllib.request; urllib.request.urlopen(f'http://127.0.0.1:{os.environ.get(\"PORT\", \"5657\")}/', timeout=5)"
 
-CMD ["video-downloade", "serve", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["video-downloade", "serve", "--host", "0.0.0.0", "--port", "5657"]

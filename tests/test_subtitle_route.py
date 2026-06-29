@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import requests
 from click.testing import CliRunner
 
 from webui import app as web_app
@@ -57,6 +58,98 @@ class SubtitleParsingTests(unittest.TestCase):
         user_message = payload["messages"][1]["content"]
         self.assertIn("- 作者：酸老师", user_message)
         self.assertIn("【逐字稿全文】", user_message)
+
+    def test_normalize_text_backend_model_aliases(self) -> None:
+        self.assertEqual(cleanup_backend.normalize_text_backend_model("MiMo-V2.5"), "mimo-v2.5")
+        self.assertEqual(cleanup_backend.normalize_text_backend_model("MiMo v2.5 Pro"), "mimo-v2.5-pro")
+        self.assertEqual(cleanup_backend.normalize_text_backend_model("openai/gpt-4o-mini"), "openai/gpt-4o-mini")
+
+    def test_cleanup_transcript_retries_timeout_with_stage_specific_settings(self) -> None:
+        timeout_exc = requests.Timeout("request timed out")
+
+        with mock.patch.object(cleanup_backend, "AI_CLEANUP_API_KEY", "sk-test"), mock.patch.object(
+            cleanup_backend, "AI_CLEANUP_BASE_URL", "https://api.example.com/v1"
+        ), mock.patch.object(
+            cleanup_backend, "AI_CLEANUP_MODEL", "MiMo-V2.5"
+        ), mock.patch.object(
+            cleanup_backend, "AI_CLEANUP_PROVIDER_LABEL", "xiaomimimo"
+        ), mock.patch.object(
+            cleanup_backend, "AI_CLEANUP_TIMEOUT_SECONDS", 9
+        ), mock.patch.object(
+            cleanup_backend, "AI_CLEANUP_MAX_RETRIES", 2
+        ), mock.patch.object(
+            cleanup_backend, "AI_CLEANUP_PROMPT_TEXT", "你是清洗助手"
+        ), mock.patch.object(
+            cleanup_backend.requests, "post", side_effect=timeout_exc
+        ) as post, mock.patch.object(cleanup_backend.time, "sleep"):
+            with self.assertRaises(cleanup_backend.AITextRequestError) as cm:
+                cleanup_backend.cleanup_transcript("逐字稿", title="标题", source_url="https://example.com/video")
+
+        self.assertEqual(post.call_count, 2)
+        self.assertIn("AI cleanup request timed out after 2 attempts", str(cm.exception))
+        self.assertIn("timeout=9s", str(cm.exception))
+        self.assertEqual(
+            cm.exception.fallback_status("local cleanup"),
+            "AI cleanup timed out after 2 attempts. Falling back to local cleanup...",
+        )
+
+    def test_cleanup_transcript_falls_back_to_supported_xiaomi_model(self) -> None:
+        unsupported_response = mock.Mock(status_code=400)
+        unsupported_response.text = '{"error":{"message":"Param Incorrect","param":"Not supported model MiMo-V2.5-preview"}}'
+        unsupported_error = requests.HTTPError("400 Client Error", response=unsupported_response)
+        unsupported_http_response = mock.Mock()
+        unsupported_http_response.raise_for_status.side_effect = unsupported_error
+
+        success_response = mock.Mock()
+        success_response.raise_for_status.return_value = None
+        success_response.json.return_value = {
+            "model": "mimo-v2.5",
+            "choices": [{"message": {"content": "清洗后正文"}}],
+        }
+
+        with mock.patch.object(cleanup_backend, "AI_CLEANUP_API_KEY", "sk-test"), mock.patch.object(
+            cleanup_backend, "AI_CLEANUP_BASE_URL", "https://token-plan-cn.xiaomimimo.com/v1"
+        ), mock.patch.object(
+            cleanup_backend, "AI_CLEANUP_MODEL", "MiMo-V2.5-preview"
+        ), mock.patch.object(
+            cleanup_backend, "AI_CLEANUP_FALLBACK_MODELS", ()
+        ), mock.patch.object(
+            cleanup_backend, "AI_CLEANUP_PROVIDER_LABEL", "xiaomimimo"
+        ), mock.patch.object(
+            cleanup_backend, "AI_CLEANUP_TIMEOUT_SECONDS", 9
+        ), mock.patch.object(
+            cleanup_backend, "AI_CLEANUP_MAX_RETRIES", 2
+        ), mock.patch.object(
+            cleanup_backend, "AI_CLEANUP_PROMPT_TEXT", "你是清洗助手"
+        ), mock.patch.object(
+            cleanup_backend.requests, "post", side_effect=[unsupported_http_response, success_response]
+        ) as post:
+            result = cleanup_backend.cleanup_transcript("逐字稿", title="标题", source_url="https://example.com/video")
+
+        self.assertEqual(post.call_count, 2)
+        self.assertEqual(post.call_args_list[0].kwargs["json"]["model"], "MiMo-V2.5-preview")
+        self.assertEqual(post.call_args_list[1].kwargs["json"]["model"], "mimo-v2.5")
+        self.assertEqual(result["model"], "mimo-v2.5")
+        self.assertEqual(result["text"], "清洗后正文")
+        self.assertEqual(result["request_config"]["resolved_model"], "mimo-v2.5")
+
+    def test_request_settings_for_stage_reflects_runtime_timeout_config(self) -> None:
+        with mock.patch.object(cleanup_backend, "ARTICLE_DRAFT_BASE_URL", "https://api.example.com/v1"), mock.patch.object(
+            cleanup_backend, "ARTICLE_DRAFT_MODEL", "MiMo-V2.5"
+        ), mock.patch.object(
+            cleanup_backend, "ARTICLE_DRAFT_PROVIDER_LABEL", "xiaomimimo"
+        ), mock.patch.object(
+            cleanup_backend, "ARTICLE_DRAFT_TIMEOUT_SECONDS", 45
+        ), mock.patch.object(
+            cleanup_backend, "ARTICLE_DRAFT_MAX_RETRIES", 3
+        ):
+            settings = cleanup_backend.request_settings_for_stage("article")
+
+        self.assertEqual(settings["base_url"], "https://api.example.com/v1")
+        self.assertEqual(settings["model"], "mimo-v2.5")
+        self.assertEqual(settings["timeout_seconds"], 45)
+        self.assertEqual(settings["max_retries"], 3)
+        self.assertEqual(settings["fallback_models"], [])
 
     def test_openrouter_headers_fall_back_to_ascii_title(self) -> None:
         with mock.patch.object(openrouter_backend, "OPENROUTER_API_KEY", "sk-test"), mock.patch.object(
@@ -181,6 +274,20 @@ class SubtitleParsingTests(unittest.TestCase):
         self.assertEqual(
             web_app.detect_platform("https://v.douyin.com/iABCDE12/"),
             "Douyin",
+        )
+
+    def test_detect_platform_supports_tiktok_kuaishou_and_wechat_channels_urls(self) -> None:
+        self.assertEqual(
+            web_app.detect_platform("https://www.tiktok.com/@scout2015/video/6718335390845095173"),
+            "TikTok",
+        )
+        self.assertEqual(
+            web_app.detect_platform("https://v.kuaishou.com/8uJMG2"),
+            "Kuaishou",
+        )
+        self.assertEqual(
+            web_app.detect_platform("https://channels.weixin.qq.com/web/pages/feed?feedId=123"),
+            "WeChat Channels",
         )
 
     def test_collect_url_inputs_accepts_bilibili_share_text(self) -> None:
@@ -602,6 +709,63 @@ class SubtitleParsingTests(unittest.TestCase):
             self.assertEqual(job.knowledge_path, str(artifact_paths["knowledge_path"]))
             self.assertIsNone(job.knowledge_error)
 
+    def test_run_text_pipeline_falls_back_to_local_cleanup_after_timeout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            artifact_base_path = Path(temp_dir) / "Sample [demo]" / "Sample [demo]"
+            job = web_app.Job(
+                job_id="job-cleanup-timeout",
+                url="https://www.youtube.com/watch?v=abcdefghijk",
+                preset=web_app.TRANSCRIPT_PRESET_NAME,
+                use_cookies=False,
+                generate_transcript=True,
+            )
+            job.title = "Sample"
+
+            timeout_error = cleanup_backend.AITextRequestError(
+                cleanup_backend.TextBackendConfig(
+                    stage_key="cleanup",
+                    stage_label="AI cleanup",
+                    base_url="https://api.example.com/v1",
+                    api_key="sk-test",
+                    model="MiMo-V2.5",
+                    provider_label="xiaomimimo",
+                    timeout_seconds=12,
+                    max_retries=2,
+                ),
+                attempts=2,
+                last_error=requests.Timeout("request timed out"),
+            )
+
+            with mock.patch.object(web_app, "AI_CLEANUP_ENABLED", True), mock.patch.object(
+                web_app, "AI_CLEANUP_FALLBACK_LOCAL", True
+            ), mock.patch.object(
+                web_app, "ENABLE_ARTICLE_DRAFT", False
+            ), mock.patch.object(
+                web_app, "cleanup_transcript", side_effect=timeout_error
+            ), mock.patch.object(
+                cleanup_backend, "AI_CLEANUP_TIMEOUT_SECONDS", 12
+            ), mock.patch.object(
+                cleanup_backend, "AI_CLEANUP_MAX_RETRIES", 2
+            ):
+                web_app.run_text_pipeline(
+                    job,
+                    artifact_base_path=artifact_base_path,
+                    raw_text="原始逐字稿",
+                    transcript_provider="yt-dlp subtitles",
+                    transcript_model="manual subtitles · zh · vtt",
+                    transcript_response={"subtitle_language": "zh"},
+                    extra_meta={"transcript_route": "direct_subtitles"},
+                )
+
+            artifact_paths = web_app.build_artifact_paths(artifact_base_path)
+            metadata = json.loads(artifact_paths["meta_path"].read_text(encoding="utf-8"))
+
+        self.assertIn("timed out after 2 attempts", metadata["cleanup_error"])
+        self.assertEqual(metadata["cleanup_timeout_seconds"], 12)
+        self.assertEqual(metadata["cleanup_max_retries"], 2)
+        self.assertTrue(metadata["cleanup_fallback_local"])
+        self.assertEqual(job.provider, "yt-dlp subtitles")
+
     def test_resolve_cookie_options_prefers_youtube_specific_cookie_file_over_browser_auth(self) -> None:
         with mock.patch.object(web_app, "YOUTUBE_COOKIES_FROM_BROWSER", "chrome"), mock.patch.object(
             web_app, "YOUTUBE_COOKIES_PATH", "/tmp/youtube.cookies.txt"
@@ -610,7 +774,7 @@ class SubtitleParsingTests(unittest.TestCase):
         ):
             options = web_app.resolve_cookie_options("https://www.youtube.com/watch?v=abcdefghijk")
 
-        self.assertEqual(options["cookiefile"], "/tmp/youtube.cookies.txt")
+        self.assertEqual(options["cookiefile"], str(Path("/tmp/youtube.cookies.txt").resolve()))
         self.assertNotIn("cookiesfrombrowser", options)
 
     def test_resolve_cookie_options_prefers_douyin_specific_cookie_file_over_browser_auth(self) -> None:
@@ -621,8 +785,50 @@ class SubtitleParsingTests(unittest.TestCase):
         ):
             options = web_app.resolve_cookie_options("https://www.douyin.com/video/1234567890")
 
-        self.assertEqual(options["cookiefile"], "/tmp/douyin.cookies.txt")
+        self.assertEqual(options["cookiefile"], str(Path("/tmp/douyin.cookies.txt").resolve()))
         self.assertNotIn("cookiesfrombrowser", options)
+
+    def test_prepare_cookiefile_for_ytdlp_copies_existing_cookie_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = Path(temp_dir) / "bilibili.cookies.txt"
+            source_text = "# Netscape HTTP Cookie File\n.example.com\tTRUE\t/\tFALSE\t0\tfoo\tbar\n"
+            source_path.write_text(source_text, encoding="utf-8")
+
+            prepared_path = Path(web_app.prepare_cookiefile_for_ytdlp(str(source_path)))
+
+        self.assertNotEqual(prepared_path, source_path)
+        self.assertTrue(prepared_path.exists())
+        self.assertEqual(prepared_path.read_text(encoding="utf-8"), source_text)
+        prepared_path.unlink(missing_ok=True)
+
+    def test_humanize_ydlp_error_for_unsupported_kuaishou_link(self) -> None:
+        job = web_app.Job(
+            job_id="job-kuaishou-error",
+            url="https://v.kuaishou.com/8uJMG2",
+            preset=web_app.AUDIO_PRESET_NAME,
+            use_cookies=False,
+            generate_transcript=False,
+        )
+
+        message = web_app.humanize_ydlp_error(job, "ERROR: Unsupported URL: https://www.kuaishou.com/short-video/demo")
+
+        self.assertIn("还不支持快手链接解析", message)
+
+    def test_humanize_ydlp_error_for_kuaishou_ssl_eof(self) -> None:
+        job = web_app.Job(
+            job_id="job-kuaishou-ssl",
+            url="https://v.kuaishou.com/8uJMG2",
+            preset=web_app.AUDIO_PRESET_NAME,
+            use_cookies=False,
+            generate_transcript=False,
+        )
+
+        message = web_app.humanize_ydlp_error(
+            job,
+            "ERROR: [generic] Unable to download webpage: [SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred in violation of protocol",
+        )
+
+        self.assertIn("还不支持快手链接解析", message)
 
     def test_humanize_ydlp_error_for_youtube_auth_failure(self) -> None:
         job = web_app.Job(

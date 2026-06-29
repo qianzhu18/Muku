@@ -67,6 +67,12 @@ def detect_platform(url: str) -> str:
         return "YouTube"
     if "douyin.com" in lowered or "iesdouyin.com" in lowered:
         return "Douyin"
+    if "tiktok.com" in lowered:
+        return "TikTok"
+    if "kuaishou.com" in lowered or "chenzhongtech.com" in lowered:
+        return "Kuaishou"
+    if "channels.weixin.qq.com" in lowered:
+        return "WeChat Channels"
     if "x.com" in lowered or "twitter.com" in lowered:
         return "X"
     return "Unknown"
@@ -90,30 +96,8 @@ def render_markdown(
     raw_text: str,
     article_text: str | None,
 ) -> str:
-    sections = [
-        f"# {title}",
-        "",
-        "## 清洗稿",
-        "",
-        clean_text.strip(),
-        "",
-        "## 原始稿",
-        "",
-        raw_text.strip(),
-        "",
-    ]
-
-    if article_text and article_text.strip():
-        sections.extend(
-            [
-                "## 解析稿",
-                "",
-                article_text.strip(),
-                "",
-            ]
-        )
-
-    return "\n".join(sections).strip() + "\n"
+    del title, raw_text, article_text
+    return clean_text.strip() + "\n"
 
 
 def write_sidecar_files(

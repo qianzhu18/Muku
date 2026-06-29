@@ -26,6 +26,18 @@ OPENROUTER_TIMEOUT_SECONDS = int(os.environ.get("OPENROUTER_TIMEOUT_SECONDS", "6
 OPENROUTER_MAX_RETRIES = int(os.environ.get("OPENROUTER_MAX_RETRIES", "3"))
 
 
+def _safe_header_value(value: str) -> str:
+    cleaned = str(value or "").strip()
+    if not cleaned:
+        return ""
+    try:
+        cleaned.encode("latin-1")
+        return cleaned
+    except UnicodeEncodeError:
+        ascii_only = "".join(ch for ch in cleaned if ord(ch) < 128).strip()
+        return " ".join(ascii_only.split())
+
+
 def _headers() -> dict[str, str]:
     if not OPENROUTER_API_KEY:
         raise RuntimeError("OPENROUTER_API_KEY is not configured.")
@@ -37,7 +49,9 @@ def _headers() -> dict[str, str]:
     if OPENROUTER_SITE_URL:
         headers["HTTP-Referer"] = OPENROUTER_SITE_URL
     if OPENROUTER_APP_NAME:
-        headers["X-Title"] = OPENROUTER_APP_NAME
+        safe_app_name = _safe_header_value(OPENROUTER_APP_NAME)
+        if safe_app_name:
+            headers["X-Title"] = safe_app_name
     return headers
 
 
@@ -93,6 +107,22 @@ def _extract_text(data: dict) -> str:
     raise RuntimeError("Unable to extract transcript text from OpenRouter response.")
 
 
+def _ensure_response_not_truncated(data: dict, *, operation: str) -> None:
+    choices = data.get("choices") or []
+    if not choices:
+        return
+
+    choice = choices[0] or {}
+    finish_reason = str(choice.get("finish_reason") or choice.get("native_finish_reason") or "").strip().lower()
+    if finish_reason != "length":
+        return
+
+    raise RuntimeError(
+        f"OpenRouter {operation} response was truncated before completion. "
+        "Try a shorter clip, prefer direct subtitles, or split the audio before retrying."
+    )
+
+
 def transcribe_audio(audio_path: Path, title: str, source_url: str, language_hint: str) -> dict:
     prompt = (
         "Transcribe this audio faithfully. "
@@ -128,6 +158,7 @@ def transcribe_audio(audio_path: Path, title: str, source_url: str, language_hin
     }
 
     data = _post_chat(payload)
+    _ensure_response_not_truncated(data, operation="transcription")
     return {
         "provider": "openrouter",
         "model": OPENROUTER_TRANSCRIPTION_MODEL,
@@ -173,10 +204,11 @@ def generate_article_draft(
     title: str,
     source_url: str,
     platform: str,
+    source_author: str | None = None,
 ) -> dict:
     payload = {
         "model": OPENROUTER_ARTICLE_MODEL,
-        "temperature": 0.35,
+        "temperature": 0.2,
         "messages": [
             {"role": "system", "content": system_prompt},
             {
@@ -185,6 +217,7 @@ def generate_article_draft(
                     "请按 System Prompt 生成中文成稿。\n\n"
                     "【元信息】\n"
                     f"- 标题：{title}\n"
+                    f"- 作者：{(source_author or '').strip() or '未知作者'}\n"
                     f"- 平台：{platform}\n"
                     f"- 原始链接：{source_url}\n\n"
                     "【逐字稿全文】\n"

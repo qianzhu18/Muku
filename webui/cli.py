@@ -2197,6 +2197,7 @@ def serve_command(host: str, port: int) -> None:
     """启动现有 Web UI。"""
     web_app.HOST = host
     web_app.PORT = port
+    web_app.initialize_web_jobs()
     click.echo(f"Serving web UI on http://{host}:{port}")
     web_app.app.run(host=host, port=port, threaded=True)
 

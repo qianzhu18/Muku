@@ -31,7 +31,7 @@ docker compose up -d --build
 启动后打开：
 
 ```text
-http://localhost:8080
+http://localhost:5657
 ```
 
 ## 第一次建议这样配
@@ -129,7 +129,7 @@ docker compose logs -f ytdl-webui
 
 - 先确认 Docker Desktop 已启动
 - 再执行 `docker compose ps`
-- 默认地址是 `http://localhost:8080`
+- 默认地址是 `http://localhost:5657`
 
 ### 2. 能打开网页，但任务报错
 

@@ -11,9 +11,10 @@
 1. [README.md](../README.md)：项目概览、安装方式、核心命令
 2. [cli.md](cli.md)：CLI、AI 集成、批量与知识库工作流
 3. [docker-deployment.md](docker-deployment.md)：Docker 一键部署、容器内 CLI、自检与升级
-4. [platform-integration-evaluation.md](platform-integration-evaluation.md)：抖音 / 视频号整合评估
-5. [input-expansion-roadmap.md](input-expansion-roadmap.md)：分享链接识别、多端入口和 APK 路线
-6. [../skills/README.md](../skills/README.md)：公开 skill 目录与安装方式
+4. [windows.md](windows.md)：Windows + Docker Desktop + PowerShell 快速上手
+5. [platform-integration-evaluation.md](platform-integration-evaluation.md)：抖音 / 视频号整合评估
+6. [input-expansion-roadmap.md](input-expansion-roadmap.md)：分享链接识别、多端入口和 APK 路线
+7. [../skills/README.md](../skills/README.md)：公开 skill 目录与安装方式
 
 ## 文档分层约定
 
@@ -28,5 +29,6 @@
 - 首页负责降低第一次使用门槛
 - `docs/cli.md` 负责承接 AI/脚本/批量工作流
 - `docs/docker-deployment.md` 负责承接部署与运维说明
+- `docs/windows.md` 负责承接 Windows 小白上手路径
 - `docs/platform-integration-evaluation.md` 负责承接多平台接入判断
 - `doc/` 允许继续保留还没定稿的想法，不影响对外观感

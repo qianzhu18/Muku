@@ -22,6 +22,7 @@
 
 - `./docker-data/downloads -> /downloads`
 - `./docker-data/config -> /config`
+- `http://localhost:5657 -> 容器内 5657`
 
 这意味着：
 
@@ -59,7 +60,7 @@ docker compose up -d --build
 ### 3. 访问网页
 
 ```text
-http://localhost:8080
+http://localhost:5657
 ```
 
 ### 4. 先做两步初始化
@@ -100,6 +101,7 @@ docker compose exec ytdl-webui video-downloade config --json
 ```bash
 DOCKER_DOWNLOADS_DIR=./docker-data/downloads
 DOCKER_CONFIG_DIR=./docker-data/config
+MUKU_WEB_PORT=5657
 ```
 
 Windows 也可以改成绝对路径，例如：
@@ -146,6 +148,26 @@ DOCKER_DOUYIN_COOKIES_PATH=/cookies/douyin.cookies.txt
 
 这比在容器里直接依赖 `*_COOKIES_FROM_BROWSER` 更稳。后者更适合作为本地 Python 运行时的方案，而不是 Docker 默认路径。
 
+### 怎么拿到可用的 `cookies.txt`
+
+推荐按平台分别准备：
+
+1. 先在浏览器登录 YouTube / Bilibili / Douyin
+2. 用任意支持导出 Netscape `cookies.txt` 的浏览器扩展或导出工具分别导出
+3. 保存到仓库 `./cookies/` 目录，文件名分别是：
+   - `youtube.cookies.txt`
+   - `bilibili.cookies.txt`
+   - `douyin.cookies.txt`
+4. 在 `.env` 里配置：
+
+```bash
+DOCKER_YOUTUBE_COOKIES_PATH=/cookies/youtube.cookies.txt
+DOCKER_BILIBILI_COOKIES_PATH=/cookies/bilibili.cookies.txt
+DOCKER_DOUYIN_COOKIES_PATH=/cookies/douyin.cookies.txt
+```
+
+现在容器会在任务启动前把这些只读挂载的 Cookies 文件复制到临时可写路径，再交给 `yt-dlp` 使用，所以继续保留 `./cookies:/cookies:ro` 这个挂载方式即可。
+
 ## 容器内 CLI
 
 网页端适合人工使用；如果你要批量跑创作者系列、给 AI agent 用，建议直接调容器里的 CLI。
@@ -165,9 +187,12 @@ docker compose exec ytdl-webui \
   video-downloade config \
   --download-dir /downloads/default \
   --transcription-model openai/gpt-audio-mini \
-  --cleanup-model GLM-4.5 \
-  --article-model GLM-4.5 \
-  --knowledge-model GLM-4.5 \
+  --cleanup-base-url https://openrouter.ai/api/v1 \
+  --cleanup-model stepfun/step-3.7-flash \
+  --article-base-url https://openrouter.ai/api/v1 \
+  --article-model stepfun/step-3.7-flash \
+  --knowledge-base-url https://openrouter.ai/api/v1 \
+  --knowledge-model stepfun/step-3.7-flash \
   --json
 ```
 

@@ -163,7 +163,7 @@ YTDLP_REMOTE_COMPONENTS = tuple(
 )
 MAX_WORKERS = int(os.environ.get("MAX_WORKERS", "2"))
 HOST = os.environ.get("HOST", "127.0.0.1")
-PORT = int(os.environ.get("PORT", "8080"))
+PORT = int(os.environ.get("PORT", "5657"))
 RESUME_WEB_JOBS = env_bool("MUKU_RESUME_JOBS", False)
 WEB_TOKEN = os.environ.get("MUKU_WEB_TOKEN", "").strip()
 WEB_TOKEN_HEADER = "X-Muku-Web-Token"
@@ -280,16 +280,22 @@ ENV_DEFAULTS = {
     "ai_cleanup_base_url": AI_CLEANUP_BASE_URL,
     "ai_cleanup_api_key": cleanup_backend.AI_CLEANUP_API_KEY,
     "ai_cleanup_model": AI_CLEANUP_MODEL,
+    "ai_cleanup_timeout_seconds": cleanup_backend.AI_CLEANUP_TIMEOUT_SECONDS,
+    "ai_cleanup_max_retries": cleanup_backend.AI_CLEANUP_MAX_RETRIES,
     "ai_cleanup_prompt_text": cleanup_backend.AI_CLEANUP_PROMPT_TEXT,
     "enable_article_draft": ENABLE_ARTICLE_DRAFT,
     "article_draft_base_url": ARTICLE_DRAFT_BASE_URL,
     "article_draft_api_key": cleanup_backend.ARTICLE_DRAFT_API_KEY,
     "article_draft_model": ARTICLE_DRAFT_MODEL,
+    "article_draft_timeout_seconds": cleanup_backend.ARTICLE_DRAFT_TIMEOUT_SECONDS,
+    "article_draft_max_retries": cleanup_backend.ARTICLE_DRAFT_MAX_RETRIES,
     "article_draft_prompt_text": cleanup_backend.ARTICLE_DRAFT_PROMPT_TEXT,
     "enable_knowledge_draft": ENABLE_KNOWLEDGE_DRAFT,
     "knowledge_draft_base_url": cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL,
     "knowledge_draft_api_key": cleanup_backend.KNOWLEDGE_DRAFT_API_KEY,
     "knowledge_draft_model": cleanup_backend.KNOWLEDGE_DRAFT_MODEL,
+    "knowledge_draft_timeout_seconds": cleanup_backend.KNOWLEDGE_DRAFT_TIMEOUT_SECONDS,
+    "knowledge_draft_max_retries": cleanup_backend.KNOWLEDGE_DRAFT_MAX_RETRIES,
     "knowledge_draft_prompt_text": cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_TEXT,
 }
 SECRET_SETTING_KEYS = {
@@ -571,6 +577,18 @@ def _coerce_bool(value: object, *, field_name: str) -> bool:
     raise ValueError(f"{field_name} 必须是布尔值。")
 
 
+def _coerce_positive_int(value: object, *, field_name: str) -> int:
+    if isinstance(value, bool):
+        raise ValueError(f"{field_name} 必须是正整数。")
+    try:
+        parsed = int(str(value).strip())
+    except ValueError as exc:
+        raise ValueError(f"{field_name} 必须是正整数。") from exc
+    if parsed <= 0:
+        raise ValueError(f"{field_name} 必须是正整数。")
+    return parsed
+
+
 def download_root_path() -> Path | None:
     if not DOWNLOAD_ROOT_DIR:
         return None
@@ -638,6 +656,14 @@ def _normalize_runtime_settings(payload: dict, *, partial: bool) -> dict:
         "enable_article_draft",
         "enable_knowledge_draft",
     }
+    int_fields = {
+        "ai_cleanup_timeout_seconds",
+        "ai_cleanup_max_retries",
+        "article_draft_timeout_seconds",
+        "article_draft_max_retries",
+        "knowledge_draft_timeout_seconds",
+        "knowledge_draft_max_retries",
+    }
     prompt_fields = {
         "ai_cleanup_prompt_text",
         "article_draft_prompt_text",
@@ -668,6 +694,16 @@ def _normalize_runtime_settings(payload: dict, *, partial: bool) -> dict:
             normalized[field] = str(payload.get(field) or "").strip()
         elif not partial:
             normalized[field] = ""
+
+    for field in ("ai_cleanup_model", "article_draft_model", "knowledge_draft_model"):
+        if field in normalized:
+            normalized[field] = cleanup_backend.normalize_text_backend_model(str(normalized[field]))
+
+    for field in int_fields:
+        if field in payload:
+            normalized[field] = _coerce_positive_int(payload.get(field), field_name=field)
+        elif not partial:
+            normalized[field] = int(ENV_DEFAULTS[field])
 
     for field in prompt_fields:
         if field in payload:
@@ -739,19 +775,31 @@ def apply_runtime_settings(saved_settings: dict | None = None) -> dict:
     cleanup_backend.AI_CLEANUP_ENABLED = bool(value_for("enable_ai_cleanup"))
     cleanup_backend.AI_CLEANUP_BASE_URL = str(value_for("ai_cleanup_base_url") or "").rstrip("/")
     cleanup_backend.AI_CLEANUP_API_KEY = str(value_for("ai_cleanup_api_key") or "").strip()
-    cleanup_backend.AI_CLEANUP_MODEL = str(value_for("ai_cleanup_model") or "").strip()
+    cleanup_backend.AI_CLEANUP_MODEL = cleanup_backend.normalize_text_backend_model(
+        str(value_for("ai_cleanup_model") or "").strip()
+    )
+    cleanup_backend.AI_CLEANUP_TIMEOUT_SECONDS = int(value_for("ai_cleanup_timeout_seconds") or 1)
+    cleanup_backend.AI_CLEANUP_MAX_RETRIES = int(value_for("ai_cleanup_max_retries") or 1)
     cleanup_backend.AI_CLEANUP_PROMPT_TEXT = str(value_for("ai_cleanup_prompt_text") or "")
 
     cleanup_backend.ENABLE_ARTICLE_DRAFT = bool(value_for("enable_article_draft"))
     cleanup_backend.ARTICLE_DRAFT_BASE_URL = str(value_for("article_draft_base_url") or "").rstrip("/")
     cleanup_backend.ARTICLE_DRAFT_API_KEY = str(value_for("article_draft_api_key") or "").strip()
-    cleanup_backend.ARTICLE_DRAFT_MODEL = str(value_for("article_draft_model") or "").strip()
+    cleanup_backend.ARTICLE_DRAFT_MODEL = cleanup_backend.normalize_text_backend_model(
+        str(value_for("article_draft_model") or "").strip()
+    )
+    cleanup_backend.ARTICLE_DRAFT_TIMEOUT_SECONDS = int(value_for("article_draft_timeout_seconds") or 1)
+    cleanup_backend.ARTICLE_DRAFT_MAX_RETRIES = int(value_for("article_draft_max_retries") or 1)
     cleanup_backend.ARTICLE_DRAFT_PROMPT_TEXT = str(value_for("article_draft_prompt_text") or "")
 
     cleanup_backend.ENABLE_KNOWLEDGE_DRAFT = bool(value_for("enable_knowledge_draft"))
     cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL = str(value_for("knowledge_draft_base_url") or "").rstrip("/")
     cleanup_backend.KNOWLEDGE_DRAFT_API_KEY = str(value_for("knowledge_draft_api_key") or "").strip()
-    cleanup_backend.KNOWLEDGE_DRAFT_MODEL = str(value_for("knowledge_draft_model") or "").strip()
+    cleanup_backend.KNOWLEDGE_DRAFT_MODEL = cleanup_backend.normalize_text_backend_model(
+        str(value_for("knowledge_draft_model") or "").strip()
+    )
+    cleanup_backend.KNOWLEDGE_DRAFT_TIMEOUT_SECONDS = int(value_for("knowledge_draft_timeout_seconds") or 1)
+    cleanup_backend.KNOWLEDGE_DRAFT_MAX_RETRIES = int(value_for("knowledge_draft_max_retries") or 1)
     cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_TEXT = str(value_for("knowledge_draft_prompt_text") or "")
 
     AI_CLEANUP_ENABLED = cleanup_backend.AI_CLEANUP_ENABLED
@@ -794,6 +842,8 @@ def current_runtime_settings() -> dict:
         "ai_cleanup_base_url": cleanup_backend.AI_CLEANUP_BASE_URL,
         "ai_cleanup_api_key": cleanup_backend.AI_CLEANUP_API_KEY,
         "ai_cleanup_model": cleanup_backend.AI_CLEANUP_MODEL,
+        "ai_cleanup_timeout_seconds": cleanup_backend.AI_CLEANUP_TIMEOUT_SECONDS,
+        "ai_cleanup_max_retries": cleanup_backend.AI_CLEANUP_MAX_RETRIES,
         "ai_cleanup_prompt_file": cleanup_backend.AI_CLEANUP_PROMPT_FILE,
         "ai_cleanup_prompt_text": cleanup_backend.AI_CLEANUP_PROMPT_TEXT,
         "ai_cleanup_prompt_source": (
@@ -803,6 +853,8 @@ def current_runtime_settings() -> dict:
         "article_draft_base_url": cleanup_backend.ARTICLE_DRAFT_BASE_URL,
         "article_draft_api_key": cleanup_backend.ARTICLE_DRAFT_API_KEY,
         "article_draft_model": cleanup_backend.ARTICLE_DRAFT_MODEL,
+        "article_draft_timeout_seconds": cleanup_backend.ARTICLE_DRAFT_TIMEOUT_SECONDS,
+        "article_draft_max_retries": cleanup_backend.ARTICLE_DRAFT_MAX_RETRIES,
         "article_draft_prompt_file": cleanup_backend.ARTICLE_DRAFT_PROMPT_FILE,
         "article_draft_prompt_text": cleanup_backend.ARTICLE_DRAFT_PROMPT_TEXT,
         "article_draft_prompt_source": (
@@ -812,6 +864,8 @@ def current_runtime_settings() -> dict:
         "knowledge_draft_base_url": cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL,
         "knowledge_draft_api_key": cleanup_backend.KNOWLEDGE_DRAFT_API_KEY,
         "knowledge_draft_model": cleanup_backend.KNOWLEDGE_DRAFT_MODEL,
+        "knowledge_draft_timeout_seconds": cleanup_backend.KNOWLEDGE_DRAFT_TIMEOUT_SECONDS,
+        "knowledge_draft_max_retries": cleanup_backend.KNOWLEDGE_DRAFT_MAX_RETRIES,
         "knowledge_draft_prompt_file": cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE,
         "knowledge_draft_prompt_text": cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_TEXT,
         "knowledge_draft_prompt_source": (
@@ -1210,38 +1264,65 @@ def platform_auth_verified(platform: str) -> bool:
     return bool(platform_auth_state(platform)["verified"])
 
 
+def prepare_cookiefile_for_ytdlp(cookiefile: str) -> str:
+    source_path = Path(cookiefile).expanduser().resolve()
+    if not source_path.exists() or not source_path.is_file():
+        return str(source_path)
+
+    stat = source_path.stat()
+    fingerprint = hashlib.sha1(
+        f"{source_path}:{stat.st_size}:{stat.st_mtime_ns}".encode("utf-8")
+    ).hexdigest()[:12]
+    prepared_dir = Path(tempfile.gettempdir()) / "video-downloade-cookies"
+    prepared_dir.mkdir(parents=True, exist_ok=True)
+    prepared_path = prepared_dir / f"{sanitize_output_component(source_path.stem)}.{fingerprint}{source_path.suffix}"
+
+    if (
+        not prepared_path.exists()
+        or prepared_path.stat().st_size != stat.st_size
+        or prepared_path.stat().st_mtime_ns < stat.st_mtime_ns
+    ):
+        shutil.copy2(source_path, prepared_path)
+        try:
+            prepared_path.chmod(0o600)
+        except OSError:
+            pass
+
+    return str(prepared_path)
+
+
 def resolve_cookie_options(url: str) -> dict:
     platform = detect_platform(url)
 
     if platform == "YouTube":
         if YOUTUBE_COOKIES_PATH:
-            return {"cookiefile": YOUTUBE_COOKIES_PATH}
+            return {"cookiefile": prepare_cookiefile_for_ytdlp(YOUTUBE_COOKIES_PATH)}
         if YOUTUBE_COOKIES_FROM_BROWSER:
             return {"cookiesfrombrowser": parse_cookies_from_browser_spec(YOUTUBE_COOKIES_FROM_BROWSER)}
         if COOKIES_PATH:
-            return {"cookiefile": COOKIES_PATH}
+            return {"cookiefile": prepare_cookiefile_for_ytdlp(COOKIES_PATH)}
         if COOKIES_FROM_BROWSER:
             return {"cookiesfrombrowser": parse_cookies_from_browser_spec(COOKIES_FROM_BROWSER)}
         return {}
 
     if platform == "Bilibili":
         if BILIBILI_COOKIES_PATH:
-            return {"cookiefile": BILIBILI_COOKIES_PATH}
+            return {"cookiefile": prepare_cookiefile_for_ytdlp(BILIBILI_COOKIES_PATH)}
         if BILIBILI_COOKIES_FROM_BROWSER:
             return {"cookiesfrombrowser": parse_cookies_from_browser_spec(BILIBILI_COOKIES_FROM_BROWSER)}
         if COOKIES_PATH:
-            return {"cookiefile": COOKIES_PATH}
+            return {"cookiefile": prepare_cookiefile_for_ytdlp(COOKIES_PATH)}
         if COOKIES_FROM_BROWSER:
             return {"cookiesfrombrowser": parse_cookies_from_browser_spec(COOKIES_FROM_BROWSER)}
         return {}
 
     if platform == "Douyin":
         if DOUYIN_COOKIES_PATH:
-            return {"cookiefile": DOUYIN_COOKIES_PATH}
+            return {"cookiefile": prepare_cookiefile_for_ytdlp(DOUYIN_COOKIES_PATH)}
         if DOUYIN_COOKIES_FROM_BROWSER:
             return {"cookiesfrombrowser": parse_cookies_from_browser_spec(DOUYIN_COOKIES_FROM_BROWSER)}
         if COOKIES_PATH:
-            return {"cookiefile": COOKIES_PATH}
+            return {"cookiefile": prepare_cookiefile_for_ytdlp(COOKIES_PATH)}
         if COOKIES_FROM_BROWSER:
             return {"cookiesfrombrowser": parse_cookies_from_browser_spec(COOKIES_FROM_BROWSER)}
         return {}
@@ -1249,7 +1330,7 @@ def resolve_cookie_options(url: str) -> dict:
     if COOKIES_FROM_BROWSER:
         return {"cookiesfrombrowser": parse_cookies_from_browser_spec(COOKIES_FROM_BROWSER)}
     if COOKIES_PATH:
-        return {"cookiefile": COOKIES_PATH}
+        return {"cookiefile": prepare_cookiefile_for_ytdlp(COOKIES_PATH)}
     return {}
 
 
@@ -1257,6 +1338,20 @@ def humanize_ydlp_error(job: Job, error_message: str) -> str:
     platform = detect_platform(job.url)
     normalized = (error_message or "").strip()
     folded = normalized.replace("’", "'")
+
+    if platform == "Kuaishou" and (
+        "Unsupported URL" in folded or "UNEXPECTED_EOF_WHILE_READING" in folded
+    ):
+        return (
+            "当前内置下载后端还不支持快手链接解析。要把快手做成稳定可用，需要补一个专用 provider，"
+            "或接入已经验证支持快手的下载能力。"
+        )
+
+    if platform == "WeChat Channels" and "Unsupported URL" in folded:
+        return (
+            "视频号当前不适合直接走这个 Docker / Web 后端链路。更现实的路径是桌面端 bridge："
+            "先在用户本机桌面环境导出可下载资源，再接入当前逐字稿和知识库流程。"
+        )
 
     if platform == "YouTube" and "Sign in to confirm you're not a bot" in folded:
         if platform_auth_configured("YouTube"):
@@ -2503,6 +2598,8 @@ def run_knowledge_pipeline(
         metadata["knowledge_provider"] = knowledge_result["provider"]
         metadata["knowledge_model"] = knowledge_result["model"]
         metadata["knowledge_base_url"] = cleanup_backend.KNOWLEDGE_DRAFT_BASE_URL
+        metadata["knowledge_timeout_seconds"] = cleanup_backend.KNOWLEDGE_DRAFT_TIMEOUT_SECONDS
+        metadata["knowledge_max_retries"] = cleanup_backend.KNOWLEDGE_DRAFT_MAX_RETRIES
         metadata["knowledge_prompt_file"] = cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_FILE
         metadata["knowledge_prompt_source"] = (
             "inline" if cleanup_backend.KNOWLEDGE_DRAFT_PROMPT_TEXT.strip() else "file"
@@ -2608,7 +2705,11 @@ def run_text_pipeline(
             cleanup_error = str(exc)
             if not AI_CLEANUP_FALLBACK_LOCAL:
                 raise
-            set_job_state(job, status="AI cleanup unavailable. Falling back to local cleanup...")
+            if isinstance(exc, cleanup_backend.AITextRequestError):
+                fallback_message = exc.fallback_status("local cleanup")
+            else:
+                fallback_message = "AI cleanup unavailable. Falling back to local cleanup..."
+            set_job_state(job, status=fallback_message)
 
     if article_path.exists():
         article_text = article_path.read_text(encoding="utf-8").strip()
@@ -2628,7 +2729,11 @@ def run_text_pipeline(
             article_response = article_result["raw_response"]
         except Exception as exc:
             article_error = str(exc)
-            set_job_state(job, status=f"GLM article unavailable. Falling back to {OPENROUTER_ARTICLE_MODEL}...")
+            if isinstance(exc, cleanup_backend.AITextRequestError):
+                fallback_message = exc.fallback_status(f"OpenRouter {OPENROUTER_ARTICLE_MODEL}")
+            else:
+                fallback_message = f"Article draft unavailable. Falling back to OpenRouter {OPENROUTER_ARTICLE_MODEL}..."
+            set_job_state(job, status=fallback_message)
             try:
                 system_prompt = cleanup_backend.ARTICLE_DRAFT_PROMPT_TEXT.strip()
                 if not system_prompt:
@@ -2665,6 +2770,9 @@ def run_text_pipeline(
             "cleanup_provider": cleanup_provider,
             "cleanup_model": cleanup_model,
             "cleanup_base_url": AI_CLEANUP_BASE_URL,
+            "cleanup_timeout_seconds": cleanup_backend.AI_CLEANUP_TIMEOUT_SECONDS,
+            "cleanup_max_retries": cleanup_backend.AI_CLEANUP_MAX_RETRIES,
+            "cleanup_fallback_local": AI_CLEANUP_FALLBACK_LOCAL,
             "cleanup_prompt_file": AI_CLEANUP_PROMPT_FILE,
             "cleanup_prompt_source": (
                 "inline" if cleanup_backend.AI_CLEANUP_PROMPT_TEXT.strip() else "file"
@@ -2673,6 +2781,8 @@ def run_text_pipeline(
             "article_provider": article_provider,
             "article_model": article_model,
             "article_base_url": ARTICLE_DRAFT_BASE_URL,
+            "article_timeout_seconds": cleanup_backend.ARTICLE_DRAFT_TIMEOUT_SECONDS,
+            "article_max_retries": cleanup_backend.ARTICLE_DRAFT_MAX_RETRIES,
             "article_prompt_file": ARTICLE_DRAFT_PROMPT_FILE,
             "article_prompt_source": (
                 "inline" if cleanup_backend.ARTICLE_DRAFT_PROMPT_TEXT.strip() else "file"

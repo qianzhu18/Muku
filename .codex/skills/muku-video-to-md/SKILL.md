@@ -66,17 +66,35 @@ video-downloade capture URL --transcription-model openai/gpt-audio-mini --json
 video-downloade capture URL --youtube-cookies-path ./cookies/youtube.cookies.txt --json
 video-downloade capture URL --bilibili-cookies-path ./cookies/bilibili.cookies.txt --json
 video-downloade capture URL --douyin-cookies-from-browser chrome --json
-video-downloade capture URL --knowledge-model GLM-4.5 --json
+video-downloade capture URL --knowledge-model stepfun/step-3.7-flash --json
 video-downloade capture URL --knowledge-prompt-file ./知识库提示词.md --json
 video-downloade audio FILE --cleanup-prompt-file ./角色提示词.md --article-prompt-file ./解析提示词.md --json
 ```
 
+## Local text backend
+
+本机清洗稿、解析稿、知识库稿默认都走 OpenRouter：
+
+```bash
+AI_CLEANUP_BASE_URL=https://openrouter.ai/api/v1
+AI_CLEANUP_MODEL=stepfun/step-3.7-flash
+ARTICLE_DRAFT_BASE_URL=https://openrouter.ai/api/v1
+ARTICLE_DRAFT_MODEL=stepfun/step-3.7-flash
+KNOWLEDGE_DRAFT_BASE_URL=https://openrouter.ai/api/v1
+KNOWLEDGE_DRAFT_MODEL=stepfun/step-3.7-flash
+```
+
+转写仍使用 `OPENROUTER_API_KEY` 和 `openai/gpt-audio-mini`。不要回显真实 key。
+
 ## Expected artifacts
 
 - `xxx - 原始逐字稿.txt`
-- `xxx - 解析稿.md`
-- `xxx - 知识库.md`
+  原始逐字稿，仅保留原始文本
 - `xxx - 逐字稿.md`
+  清洗后的逐字稿正文，不重复附带原始稿、解析稿或额外说明
+- `xxx - 解析稿.md`
+  仅保留解析成稿正文，严格遵循 `解析提示词.md`
+- `xxx - 知识库.md`
 - `xxx - 转写信息.json`
 
 ## Operational notes
@@ -88,5 +106,8 @@ video-downloade audio FILE --cleanup-prompt-file ./角色提示词.md --article-
 - `artifacts` 默认只返回摘要 metadata；排障时再加 `--full-metadata`
 - 若仅需下载，不要额外开启逐字稿，以节省成本和时间
 - 转写前预处理音频默认写入系统临时目录，不会在下载目录里额外留下第二个可见 MP3
-- 知识库整理默认沿用 `ARTICLE_DRAFT_*` 这组配置；只有需要单独后端时再设置 `KNOWLEDGE_DRAFT_*`
+- `逐字稿.md` 默认只写清洗后的正文；原始内容单独放在 `原始逐字稿.txt`
+- `解析稿.md` 默认只写最终成稿，不添加“解析稿”“成稿如下”等外层包装
+- 默认解析规则来自仓库根目录的 `解析提示词.md`；批量回写或重生成时也要遵守同一规范
+- 知识库整理默认显式使用 `KNOWLEDGE_DRAFT_*`，本机与 `ARTICLE_DRAFT_*` 同样走 OpenRouter StepFun
 - 如果要先从创作者主页 / 系列页提取链接，推荐和 [`web-access`](https://github.com/eze-is/web-access) 搭配：先让它生成 `urls.txt`，再调上面的批量命令

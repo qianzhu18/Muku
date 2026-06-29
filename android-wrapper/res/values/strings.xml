@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">幕库 Muku</string>
+    <string name="back">Back</string>
+    <string name="reload">Reload</string>
+    <string name="configure">Config</string>
+    <string name="save">保存</string>
+    <string name="exit_app">退出</string>
+    <string name="dialog_title">连接幕库服务</string>
+    <string name="dialog_title_required">先配置你的幕库服务</string>
+    <string name="config_hint">默认会尝试连接这台 Mac 的 Tailscale 地址。如果你改成了局域网地址、HTTPS，或者换了一台主机，可以在这里随时改。</string>
+    <string name="base_url_hint">服务地址</string>
+    <string name="token_hint">MUKU_WEB_TOKEN（可留空）</string>
+    <string name="auto_submit_share">从分享唤起时自动提交任务</string>
+    <string name="base_url_required">请先填写可访问的幕库服务地址</string>
+    <string name="status_idle">等待连接幕库服务</string>
+    <string name="status_loading">正在连接幕库…</string>
+    <string name="status_loading_share">收到分享内容，正在连接幕库…</string>
+    <string name="status_connected">已连接到 %1$s</string>
+    <string name="status_error">连接失败：%1$s</string>
+    <string name="not_configured">未配置</string>
+    <string name="no_handler">系统里没有可处理这个链接的应用</string>
+    <string name="error_title">连不上幕库服务</string>
+    <string name="error_body">我还没有拿到幕库页面。</string>
+    <string name="error_hint_tailscale">如果当前地址是 100.x 或 *.ts.net，请确认手机和这台 Mac 的 Tailscale 都在线。</string>
+    <string name="error_hint_generic">请确认这台 Mac 上的幕库服务已经启动，而且当前地址真的能从手机访问。</string>
+    <string name="error_pending_share">你刚分享进来的内容还保留着，连上后点一次重试就会继续。</string>
+    <string name="error_detail">系统返回：%1$s</string>
+    <string name="error_current_url">当前地址：%1$s</string>
+    <string name="retry_now">重试</string>
+    <string name="error_unknown">未知错误</string>
+    <string name="error_ssl">SSL 证书校验失败</string>
+    <string name="default_base_url">http://macbook-air-2.taila38ee8.ts.net:8080</string>
+    <string name="default_web_token"></string>
+</resources>

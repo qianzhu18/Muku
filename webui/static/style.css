@@ -470,6 +470,59 @@ textarea {
   gap: 16px;
 }
 
+.settings-cookie-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 14px;
+}
+
+.settings-cookie-platform {
+  display: grid;
+  gap: 12px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: rgba(8, 10, 11, 0.4);
+}
+
+.settings-cookie-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.settings-cookie-head strong {
+  font-size: 0.92rem;
+}
+
+.settings-cookie-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 28px;
+  padding: 0 10px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--text-sub);
+  font-size: 0.74rem;
+  white-space: nowrap;
+}
+
+.settings-cookie-status.is-verified {
+  border-color: rgba(125, 196, 142, 0.5);
+  color: var(--accent-soft);
+}
+
+.settings-cookie-status.is-configured {
+  border-color: rgba(232, 197, 104, 0.4);
+  color: #e8c568;
+}
+
+.settings-cookie-status.is-missing {
+  color: var(--text-muted);
+}
+
 .checkbox-field {
   align-self: stretch;
 }
@@ -1169,6 +1222,7 @@ body.settings-open .settings-drawer {
 
   .compact-overview,
   .split-grid,
+  .settings-cookie-grid,
   .settings-grid,
   .detail-grid,
   .monitor-stats {
